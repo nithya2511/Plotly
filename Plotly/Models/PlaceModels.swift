@@ -27,9 +27,10 @@ struct PlaceDetails: Equatable {
     }
 }
 
-struct PlanSnapshot: Equatable {
+struct PlanSnapshot: Identifiable, Equatable {
     let id: UUID
     let title: String
+    let isFavorite: Bool
     let stops: [PlanStopSnapshot]
 }
 

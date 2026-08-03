@@ -2,10 +2,6 @@ import CoreLocation
 import MapKit
 import SwiftUI
 
-#if canImport(GoogleMaps)
-import GoogleMaps
-#endif
-
 struct PlannerMapView: View {
     let stops: [PlanStopSnapshot]
     @Binding var selectedStopID: UUID?
@@ -24,27 +20,11 @@ struct PlannerMapView: View {
 
     @ViewBuilder
     private var activeMap: some View {
-        #if canImport(GoogleMaps)
-            if GoogleSDKBootstrap.isConfigured {
-                GooglePlannerMapView(
-                    stops: stops,
-                    selectedStopID: $selectedStopID,
-                    userCoordinate: userCoordinate
-                )
-            } else {
-                MapKitPlannerMapView(
-                    stops: stops,
-                    selectedStopID: $selectedStopID,
-                    userCoordinate: userCoordinate
-                )
-            }
-        #else
-            MapKitPlannerMapView(
-                stops: stops,
-                selectedStopID: $selectedStopID,
-                userCoordinate: userCoordinate
-            )
-        #endif
+        MapKitPlannerMapView(
+            stops: stops,
+            selectedStopID: $selectedStopID,
+            userCoordinate: userCoordinate
+        )
     }
 }
 
@@ -52,8 +32,13 @@ private struct MapKitPlannerMapView: View {
     let stops: [PlanStopSnapshot]
     @Binding var selectedStopID: UUID?
     let userCoordinate: CLLocationCoordinate2D?
+    @State private var cameraPosition: MapCameraPosition = .automatic
 
-    private var initialRegion: MKCoordinateRegion {
+    private var routeCoordinates: [CLLocationCoordinate2D] {
+        stops.map(\.coordinate)
+    }
+
+    private var focusedRegion: MKCoordinateRegion {
         if let selected = stops.first(where: { $0.id == selectedStopID }) {
             return MKCoordinateRegion(
                 center: selected.coordinate,
@@ -81,10 +66,38 @@ private struct MapKitPlannerMapView: View {
         )
     }
 
+    private var focusedCameraPosition: MapCameraPosition {
+        if selectedStopID != nil || stops.count <= 1 {
+            return .region(focusedRegion)
+        }
+
+        return .rect(routeMapRect)
+    }
+
+    private var routeMapRect: MKMapRect {
+        let points = stops.map { MKMapPoint($0.coordinate) }
+        let rect = points.dropFirst().reduce(
+            MKMapRect(origin: points[0], size: MKMapSize(width: 1, height: 1))
+        ) { partialResult, point in
+            partialResult.union(MKMapRect(origin: point, size: MKMapSize(width: 1, height: 1)))
+        }
+
+        let inset = max(rect.width, rect.height) * 0.22
+        return rect.insetBy(dx: -max(inset, 1600), dy: -max(inset, 1600))
+    }
+
     var body: some View {
-        Map(initialPosition: .region(initialRegion)) {
+        Map(position: $cameraPosition) {
             if userCoordinate != nil {
                 UserAnnotation()
+            }
+
+            if routeCoordinates.count > 1 {
+                MapPolyline(coordinates: routeCoordinates)
+                    .stroke(
+                        Color(.systemBlue).opacity(0.62),
+                        style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round)
+                    )
             }
 
             ForEach(stops) { stop in
@@ -102,6 +115,13 @@ private struct MapKitPlannerMapView: View {
                 }
             }
         }
+        .onAppear(perform: focusMap)
+        .onChange(of: stops.map(\.id)) { _, _ in
+            focusMap()
+        }
+        .onChange(of: selectedStopID) { _, _ in
+            focusMap()
+        }
         .mapControls {
             if userCoordinate != nil {
                 MapUserLocationButton()
@@ -109,83 +129,10 @@ private struct MapKitPlannerMapView: View {
             MapCompass()
         }
     }
-}
 
-#if canImport(GoogleMaps)
-private struct GooglePlannerMapView: UIViewRepresentable {
-    let stops: [PlanStopSnapshot]
-    @Binding var selectedStopID: UUID?
-    let userCoordinate: CLLocationCoordinate2D?
-
-    func makeUIView(context: Context) -> GMSMapView {
-        let camera = GMSCameraPosition.camera(
-            withLatitude: userCoordinate?.latitude ?? 37.7749,
-            longitude: userCoordinate?.longitude ?? -122.4194,
-            zoom: userCoordinate == nil ? 11 : 13
-        )
-        let initialFrame = CGRect(x: 0, y: 0, width: 1, height: 1)
-        let mapView = GMSMapView.map(withFrame: initialFrame, camera: camera)
-        mapView.delegate = context.coordinator
-        mapView.isMyLocationEnabled = userCoordinate != nil
-        mapView.settings.myLocationButton = true
-        mapView.padding = UIEdgeInsets(top: 74, left: 0, bottom: 220, right: 0)
-        return mapView
-    }
-
-    func updateUIView(_ mapView: GMSMapView, context: Context) {
-        context.coordinator.parent = self
-        mapView.clear()
-        mapView.isMyLocationEnabled = userCoordinate != nil
-        mapView.padding = UIEdgeInsets(top: 74, left: 0, bottom: stops.isEmpty ? 190 : 300, right: 0)
-
-        for stop in stops {
-            let marker = GMSMarker(position: stop.coordinate)
-            marker.title = stop.name
-            marker.snippet = stop.formattedAddress
-            marker.userData = stop.id.uuidString
-            marker.icon = GMSMarker.markerImage(with: selectedStopID == stop.id ? .systemBlue : .systemRed)
-            marker.map = mapView
-        }
-
-        if let selected = stops.first(where: { $0.id == selectedStopID }) {
-            mapView.animate(toLocation: selected.coordinate)
-            mapView.animate(toZoom: max(mapView.camera.zoom, 14))
-        } else if stops.count > 1 {
-            var bounds = GMSCoordinateBounds(coordinate: stops[0].coordinate, coordinate: stops[1].coordinate)
-            for stop in stops.dropFirst(2) {
-                bounds = bounds.includingCoordinate(stop.coordinate)
-            }
-            mapView.animate(with: GMSCameraUpdate.fit(bounds, withPadding: 80))
-        } else if let first = stops.first {
-            mapView.animate(toLocation: first.coordinate)
-            mapView.animate(toZoom: 13)
-        } else if let userCoordinate {
-            mapView.animate(toLocation: userCoordinate)
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    final class Coordinator: NSObject, GMSMapViewDelegate {
-        var parent: GooglePlannerMapView
-
-        init(parent: GooglePlannerMapView) {
-            self.parent = parent
-        }
-
-        func mapView(_ mapView: GMSMapView, didTap marker: GMSMarker) -> Bool {
-            guard
-                let value = marker.userData as? String,
-                let id = UUID(uuidString: value)
-            else {
-                return false
-            }
-
-            parent.selectedStopID = id
-            return false
+    private func focusMap() {
+        withAnimation(.easeInOut(duration: 0.28)) {
+            cameraPosition = focusedCameraPosition
         }
     }
 }
-#endif

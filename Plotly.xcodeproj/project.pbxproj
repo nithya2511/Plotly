@@ -6,12 +6,6 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		A10000000000000000000001 /* GoogleMaps in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000011 /* GoogleMaps */; };
-		A10000000000000000000002 /* GooglePlaces in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000012 /* GooglePlaces */; };
-		A10000000000000000000003 /* GooglePlacesSwift in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000013 /* GooglePlacesSwift */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXContainerItemProxy section */
 		82BBE8992FFEEF87004848FA /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -58,9 +52,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A10000000000000000000001 /* GoogleMaps in Frameworks */,
-				A10000000000000000000002 /* GooglePlaces in Frameworks */,
-				A10000000000000000000003 /* GooglePlacesSwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -121,9 +112,6 @@
 			);
 			name = Plotly;
 			packageProductDependencies = (
-				A10000000000000000000011 /* GoogleMaps */,
-				A10000000000000000000012 /* GooglePlaces */,
-				A10000000000000000000013 /* GooglePlacesSwift */,
 			);
 			productName = Plotly;
 			productReference = 82BBE88B2FFEEF85004848FA /* Plotly.app */;
@@ -208,8 +196,6 @@
 			mainGroup = 82BBE8822FFEEF85004848FA;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				A10000000000000000000021 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */,
-				A10000000000000000000022 /* XCRemoteSwiftPackageReference "ios-places-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 82BBE88C2FFEEF85004848FA /* Products */;
@@ -416,8 +402,6 @@
 				DEVELOPMENT_TEAM = JBD99C5SKP;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				GOOGLE_MAPS_API_KEY = AIzaSyAp6_TYnga61HuwxxU2KFpdI_Q9MYfWIV4;
-				INFOPLIST_KEY_GoogleMapsAPIKey = "$(GOOGLE_MAPS_API_KEY)";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Plotly uses your location to center the map and improve nearby place search.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -451,8 +435,6 @@
 				DEVELOPMENT_TEAM = JBD99C5SKP;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				GOOGLE_MAPS_API_KEY = AIzaSyAp6_TYnga61HuwxxU2KFpdI_Q9MYfWIV4;
-				INFOPLIST_KEY_GoogleMapsAPIKey = "$(GOOGLE_MAPS_API_KEY)";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Plotly uses your location to center the map and improve nearby place search.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -600,43 +582,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		A10000000000000000000021 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/googlemaps/ios-maps-sdk";
-			requirement = {
-				kind = exactVersion;
-				version = 10.15.0;
-			};
-		};
-		A10000000000000000000022 /* XCRemoteSwiftPackageReference "ios-places-sdk" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/googlemaps/ios-places-sdk";
-			requirement = {
-				kind = exactVersion;
-				version = 10.15.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		A10000000000000000000011 /* GoogleMaps */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A10000000000000000000021 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */;
-			productName = GoogleMaps;
-		};
-		A10000000000000000000012 /* GooglePlaces */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A10000000000000000000022 /* XCRemoteSwiftPackageReference "ios-places-sdk" */;
-			productName = GooglePlaces;
-		};
-		A10000000000000000000013 /* GooglePlacesSwift */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A10000000000000000000022 /* XCRemoteSwiftPackageReference "ios-places-sdk" */;
-			productName = GooglePlacesSwift;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 82BBE8832FFEEF85004848FA /* Project object */;
 }

@@ -1,24 +1,119 @@
 import SwiftData
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @AppStorage("activeUserID") private var activeUserIDString = ""
+    @State private var activeAccount: UserAccountSnapshot?
+    @State private var isLoadingAccount = true
 
     var body: some View {
-        HomeMapScreen(
-            viewModel: HomeMapViewModel(
-                repository: SwiftDataPlanRepository(modelContext: modelContext)
-            )
-        )
+        Group {
+            if isLoadingAccount {
+                AccountLoadingView()
+            } else if let activeAccount {
+                HomeMapScreen(
+                    viewModel: HomeMapViewModel(
+                        repository: SwiftDataPlanRepository(
+                            modelContext: modelContext,
+                            userID: activeAccount.id
+                        )
+                    ),
+                    account: activeAccount,
+                    onSignOut: signOut
+                )
+                .id(activeAccount.id)
+            } else {
+                LoginScreen(
+                    viewModel: LoginViewModel(
+                        repository: SwiftDataAccountRepository(modelContext: modelContext),
+                        onSignedIn: signIn,
+                        onSkipped: continueAsGuest
+                    )
+                )
+            }
+        }
+        .task {
+            loadActiveAccount()
+        }
+    }
+
+    private func loadActiveAccount() {
+        defer { isLoadingAccount = false }
+
+        guard let accountID = UUID(uuidString: activeUserIDString) else {
+            activeAccount = nil
+            activeUserIDString = ""
+            return
+        }
+
+        if accountID == UserAccountSnapshot.guestID {
+            activeAccount = .guest
+            return
+        }
+
+        do {
+            let repository = SwiftDataAccountRepository(modelContext: modelContext)
+            activeAccount = try repository.account(id: accountID)
+            if activeAccount == nil {
+                activeUserIDString = ""
+            }
+        } catch {
+            activeAccount = nil
+            activeUserIDString = ""
+        }
+    }
+
+    private func signIn(_ account: UserAccountSnapshot) {
+        activeUserIDString = account.id.uuidString
+        activeAccount = account
+        isLoadingAccount = false
+    }
+
+    private func continueAsGuest(_ account: UserAccountSnapshot) {
+        activeUserIDString = account.id.uuidString
+        activeAccount = account
+        isLoadingAccount = false
+    }
+
+    private func signOut() {
+        activeUserIDString = ""
+        activeAccount = nil
+        isLoadingAccount = false
+    }
+}
+
+private struct AccountLoadingView: View {
+    var body: some View {
+        ZStack {
+            Color(.systemBackground)
+                .ignoresSafeArea()
+
+            ProgressView()
+                .controlSize(.large)
+                .accessibilityLabel("Loading account")
+        }
     }
 }
 
 struct HomeMapScreen: View {
     @StateObject private var viewModel: HomeMapViewModel
+    private let account: UserAccountSnapshot
+    private let onSignOut: () -> Void
     @State private var sheetDetent: PlanSheetDetent = .collapsed
+    @State private var isMainMenuPresented = false
+    @State private var isRoutePlannerPresented = false
+    @State private var isRouteEditorPresented = false
 
-    init(viewModel: HomeMapViewModel) {
+    init(
+        viewModel: HomeMapViewModel,
+        account: UserAccountSnapshot,
+        onSignOut: @escaping () -> Void
+    ) {
         _viewModel = StateObject(wrappedValue: viewModel)
+        self.account = account
+        self.onSignOut = onSignOut
     }
 
     var body: some View {
@@ -31,7 +126,15 @@ struct HomeMapScreen: View {
             .ignoresSafeArea()
 
             VStack(spacing: 10) {
-                SearchPanel(viewModel: viewModel)
+                SearchPanel(
+                    viewModel: viewModel,
+                    onOpenMenu: {
+                        viewModel.refreshBookmarkedPlans()
+                        withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                            isMainMenuPresented = true
+                        }
+                    }
+                )
 
                 if let errorMessage = viewModel.errorMessage {
                     ErrorBanner(message: errorMessage) {
@@ -46,10 +149,41 @@ struct HomeMapScreen: View {
 
             VStack {
                 Spacer()
-                PlanSheet(viewModel: viewModel, detent: $sheetDetent)
+                PlanSheet(
+                    viewModel: viewModel,
+                    detent: $sheetDetent,
+                    onEditRoute: {
+                        isRouteEditorPresented = true
+                    },
+                    onPlanRoute: {
+                        isRoutePlannerPresented = true
+                    }
+                )
             }
             .ignoresSafeArea(edges: .bottom)
+
+            if isMainMenuPresented {
+                Color.black.opacity(0.24)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                            isMainMenuPresented = false
+                        }
+                    }
+                    .transition(.opacity)
+                    .zIndex(2)
+
+                MainMenuDrawer(
+                    viewModel: viewModel,
+                    account: account,
+                    onSignOut: onSignOut,
+                    isPresented: $isMainMenuPresented
+                )
+                .transition(.move(edge: .leading).combined(with: .opacity))
+                .zIndex(3)
+            }
         }
+        .animation(.spring(response: 0.34, dampingFraction: 0.88), value: isMainMenuPresented)
         .task {
             viewModel.load()
         }
@@ -70,6 +204,12 @@ struct HomeMapScreen: View {
                 viewModel.saveNote()
             }
         }
+        .sheet(isPresented: $isRoutePlannerPresented) {
+            RoutePlannerSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $isRouteEditorPresented) {
+            RouteEditorSheet(viewModel: viewModel)
+        }
     }
 }
 
@@ -78,101 +218,250 @@ private enum PlanSheetDetent {
     case expanded
 }
 
-private struct SearchPanel: View {
+private struct MainMenuDrawer: View {
     @ObservedObject var viewModel: HomeMapViewModel
+    let account: UserAccountSnapshot
+    let onSignOut: () -> Void
+    @Binding var isPresented: Bool
+
+    private func close() {
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+            isPresented = false
+        }
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-
-                TextField("Search places", text: $viewModel.searchText)
-                    .textInputAutocapitalization(.words)
-                    .disableAutocorrection(true)
-                    .submitLabel(.search)
-                    .accessibilityIdentifier("place-search-field")
-
-                if viewModel.isSearching || viewModel.isAddingStop {
-                    ProgressView()
-                        .controlSize(.small)
-                } else if viewModel.hasSearchText {
-                    Button {
-                        viewModel.clearSearch()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Clear search")
-                }
-            }
-            .frame(minHeight: 48)
-            .padding(.horizontal, 14)
-
-            if !viewModel.suggestions.isEmpty {
-                Divider()
-
-                VStack(spacing: 0) {
-                    ForEach(viewModel.suggestions.prefix(6)) { suggestion in
+        GeometryReader { proxy in
+            NavigationStack {
+                List {
+                    Section {
                         Button {
-                            viewModel.addStop(from: suggestion)
+                            viewModel.createNewRoute()
+                            close()
                         } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "mappin.circle.fill")
-                                    .font(.title3)
-                                    .foregroundStyle(.red)
+                            Label("New route", systemImage: "plus.circle.fill")
+                        }
+                    }
 
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(suggestion.primaryText)
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
-                                    if !suggestion.secondaryText.isEmpty {
-                                        Text(suggestion.secondaryText)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
+                    Section("Bookmarked routes") {
+                        if viewModel.bookmarkedPlans.isEmpty {
+                            ContentUnavailableView(
+                                "No Bookmarks",
+                                systemImage: "bookmark",
+                                description: Text("Bookmarked routes will appear here.")
+                            )
+                        } else {
+                            ForEach(viewModel.bookmarkedPlans) { plan in
+                                Button {
+                                    viewModel.selectBookmarkedPlan(plan)
+                                    close()
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Image(systemName: "bookmark.fill")
+                                            .foregroundStyle(Color(.systemBlue))
+                                            .frame(width: 26)
+
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(plan.title)
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(1)
+                                            Text("\(plan.stops.count) \(plan.stops.count == 1 ? "stop" : "stops")")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+
+                                        Spacer()
+
+                                        if plan.id == viewModel.currentPlanID {
+                                            Text("Current")
+                                                .font(.caption2.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
                                 }
-
-                                Spacer()
-                                Image(systemName: "plus")
-                                    .font(.subheadline.weight(.bold))
-                                    .foregroundStyle(.blue)
+                                .buttonStyle(.plain)
                             }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 11)
                         }
-                        .buttonStyle(.plain)
+                    }
 
-                        if suggestion.id != viewModel.suggestions.prefix(6).last?.id {
-                            Divider().padding(.leading, 46)
+                    Section("Account") {
+                        HStack(spacing: 12) {
+                            Image(systemName: "person.crop.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(Color(.systemBlue))
+                                .frame(width: 28)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(account.displayName)
+                                    .font(.subheadline.weight(.semibold))
+                                Text(account.email)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Label("Settings", systemImage: "gearshape")
+                        Label("Appearance", systemImage: "circle.lefthalf.filled")
+
+                        Button(role: account.isGuest ? nil : .destructive) {
+                            close()
+                            onSignOut()
+                        } label: {
+                            Label(
+                                account.isGuest ? "Leave guest mode" : "Sign out",
+                                systemImage: "rectangle.portrait.and.arrow.right"
+                            )
+                        }
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .navigationTitle("Plotly")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") {
+                            close()
                         }
                     }
                 }
             }
+            .frame(width: min(340, proxy.size.width * 0.84))
+            .frame(maxHeight: .infinity)
+            .background(.regularMaterial)
+            .clipShape(
+                UnevenRoundedRectangle(
+                    bottomTrailingRadius: 22,
+                    topTrailingRadius: 22,
+                    style: .continuous
+                )
+            )
+            .shadow(color: .black.opacity(0.22), radius: 18, x: 6, y: 0)
+            .ignoresSafeArea(edges: .vertical)
         }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
+    }
+}
+
+private struct SearchPanel: View {
+    @ObservedObject var viewModel: HomeMapViewModel
+    let onOpenMenu: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Button(action: onOpenMenu) {
+                Image(systemName: "line.3.horizontal")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 48, height: 48)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .background(.regularMaterial, in: Circle())
+            .overlay {
+                Circle()
+                    .strokeBorder(.white.opacity(0.26), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
+            .accessibilityLabel("Open menu")
+
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+
+                    TextField("Search places", text: $viewModel.searchText)
+                        .textInputAutocapitalization(.words)
+                        .disableAutocorrection(true)
+                        .submitLabel(.search)
+                        .accessibilityIdentifier("place-search-field")
+
+                    if viewModel.isSearching || viewModel.isAddingStop {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if viewModel.hasSearchText {
+                        Button {
+                            viewModel.clearSearch()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear search")
+                    }
+                }
+                .frame(minHeight: 48)
+                .padding(.horizontal, 14)
+
+                if !viewModel.suggestions.isEmpty {
+                    Divider()
+
+                    VStack(spacing: 0) {
+                        ForEach(viewModel.suggestions.prefix(6)) { suggestion in
+                            Button {
+                                viewModel.addStop(from: suggestion)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "mappin.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(.red)
+
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(suggestion.primaryText)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        if !suggestion.secondaryText.isEmpty {
+                                            Text(suggestion.secondaryText)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+
+                                    Spacer()
+                                    Image(systemName: "plus")
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundStyle(.blue)
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 11)
+                            }
+                            .buttonStyle(.plain)
+
+                            if suggestion.id != viewModel.suggestions.prefix(6).last?.id {
+                                Divider().padding(.leading, 46)
+                            }
+                        }
+                    }
+                }
+            }
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
+        }
     }
 }
 
 private struct PlanSheet: View {
     @ObservedObject var viewModel: HomeMapViewModel
     @Binding var detent: PlanSheetDetent
+    let onEditRoute: () -> Void
+    let onPlanRoute: () -> Void
     @GestureState private var dragOffset: CGFloat = 0
+    @State private var draggedStopID: UUID?
+    @State private var isEditingRouteTitle = false
+    @State private var routeTitleDraft = ""
+    @FocusState private var isRouteTitleFocused: Bool
 
     private var isExpanded: Bool {
         detent == .expanded
     }
 
     private var collapsedContentHeight: CGFloat {
-        viewModel.stops.isEmpty ? 190 : 178
+        viewModel.stops.isEmpty ? 190 : 252
     }
 
     private var expandedContentHeight: CGFloat {
-        viewModel.stops.isEmpty ? 260 : 430
+        viewModel.stops.isEmpty ? 260 : 520
     }
 
     private var activeHeight: CGFloat {
@@ -188,6 +477,10 @@ private struct PlanSheet: View {
             dragHandle
             sheetHeader
             sheetContent
+            if !viewModel.stops.isEmpty {
+                RouteNavigationControl(viewModel: viewModel)
+                    .padding(.horizontal, 16)
+            }
         }
         .frame(height: displayedHeight, alignment: .top)
         .clipped()
@@ -198,29 +491,18 @@ private struct PlanSheet: View {
                 .strokeBorder(.white.opacity(0.28), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.18), radius: 16, y: -4)
-        .gesture(
-            DragGesture(minimumDistance: 8)
-                .updating($dragOffset) { value, state, _ in
-                    let translation = value.translation.height
-                    if isExpanded {
-                        state = min(80, max(-40, translation))
-                    } else {
-                        state = min(40, max(-160, translation))
-                    }
-                }
-                .onEnded { value in
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                        if value.translation.height > 36 {
-                            detent = .collapsed
-                        } else if value.translation.height < -36 {
-                            detent = .expanded
-                        }
-                    }
-                }
-        )
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: detent)
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: viewModel.stops.count)
         .animation(.easeInOut(duration: 0.18), value: viewModel.isAddingStop)
+        .onChange(of: viewModel.planTitle) { _, newTitle in
+            guard !isEditingRouteTitle else { return }
+            routeTitleDraft = newTitle
+        }
+        .onChange(of: isRouteTitleFocused) { _, isFocused in
+            if !isFocused, isEditingRouteTitle {
+                saveRouteTitle()
+            }
+        }
     }
 
     private var dragHandle: some View {
@@ -230,8 +512,31 @@ private struct PlanSheet: View {
             .padding(.top, 9)
             .contentShape(Rectangle())
             .onTapGesture {
+                clearRouteInteraction()
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                     detent = isExpanded ? .collapsed : .expanded
+                }
+            }
+            .gesture(sheetDragGesture)
+    }
+
+    private var sheetDragGesture: some Gesture {
+        DragGesture(minimumDistance: 8)
+            .updating($dragOffset) { value, state, _ in
+                let translation = value.translation.height
+                if isExpanded {
+                    state = min(80, max(-40, translation))
+                } else {
+                    state = min(40, max(-160, translation))
+                }
+            }
+            .onEnded { value in
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                    if value.translation.height > 36 {
+                        detent = .collapsed
+                    } else if value.translation.height < -36 {
+                        detent = .expanded
+                    }
                 }
             }
     }
@@ -244,9 +549,36 @@ private struct PlanSheet: View {
                 .frame(width: 38, height: 38)
                 .background(.blue, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(viewModel.planTitle)
-                    .font(.headline.weight(.semibold))
+            VStack(alignment: .leading, spacing: 4) {
+                if isEditingRouteTitle {
+                    TextField("Route name", text: $routeTitleDraft)
+                        .font(.headline.weight(.semibold))
+                        .textInputAutocapitalization(.words)
+                        .disableAutocorrection(true)
+                        .submitLabel(.done)
+                        .focused($isRouteTitleFocused)
+                        .onSubmit(saveRouteTitle)
+                        .padding(.horizontal, 8)
+                        .frame(height: 32)
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .accessibilityLabel("Route title")
+                } else {
+                    Button(action: startEditingRouteTitle) {
+                        HStack(spacing: 5) {
+                            Text(viewModel.planTitle)
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            Image(systemName: "pencil")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Edit route title")
+                }
+
                 Text(statusText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -255,23 +587,30 @@ private struct PlanSheet: View {
 
             Spacer()
 
-            Text("\(viewModel.stops.count)")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(viewModel.stops.isEmpty ? Color.secondary : Color.blue)
-                .frame(width: 34, height: 34)
-                .background(Color(.secondarySystemBackground), in: Circle())
-                .accessibilityLabel("\(viewModel.stops.count) stops")
-
             Button {
+                onPlanRoute()
             } label: {
-                Image(systemName: "arrow.triangle.turn.up.right.diamond")
+                Image(systemName: "wand.and.sparkles")
                     .font(.headline)
             }
             .buttonStyle(.bordered)
-            .disabled(true)
-            .accessibilityLabel("Route optimization coming later")
+            .disabled(viewModel.stops.count < 2)
+            .accessibilityLabel("Optimize route")
+
+            Button {
+                viewModel.toggleRouteFavorite()
+            } label: {
+                Image(systemName: viewModel.isPlanFavorite ? "bookmark.fill" : "bookmark")
+                    .font(.headline)
+            }
+            .buttonStyle(.bordered)
+            .tint(viewModel.isPlanFavorite ? .blue : .secondary)
+            .disabled(viewModel.stops.isEmpty)
+            .accessibilityLabel(viewModel.isPlanFavorite ? "Remove route bookmark" : "Bookmark route")
         }
         .padding(.horizontal, 16)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: clearRouteInteraction)
     }
 
     @ViewBuilder
@@ -280,26 +619,76 @@ private struct PlanSheet: View {
             EmptyPlanPrompt(isAdding: viewModel.isAddingStop, pendingStopName: viewModel.pendingStopName)
                 .padding(.horizontal, 16)
         } else if isExpanded {
-            ScrollView {
-                LazyVStack(spacing: 10) {
-                    if viewModel.isAddingStop {
-                        AddingStopRow(name: viewModel.pendingStopName)
-                    }
+            ScrollView(showsIndicators: false) {
+                ZStack(alignment: .top) {
+                    Color(.systemBackground)
+                        .opacity(0.001)
+                        .frame(maxWidth: .infinity, minHeight: 300)
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: clearRouteInteraction)
+                        .onDrop(of: [UTType.text], isTargeted: nil) { _ in
+                            clearRouteInteraction()
+                            return true
+                        }
 
-                    ForEach(Array(viewModel.stops.enumerated()), id: \.element.id) { index, stop in
-                        StopRow(
-                            stop: stop,
-                            role: RouteStopRole(index: index, total: viewModel.stops.count),
-                            isSelected: viewModel.selectedStopID == stop.id,
-                            isRecentlyAdded: viewModel.recentlyAddedStopID == stop.id,
-                            onSelect: { viewModel.selectedStopID = stop.id },
-                            onEditNote: { viewModel.startEditingNote(for: stop) },
-                            onDelete: { viewModel.remove(stop) }
-                        )
+                    LazyVStack(spacing: 12) {
+                        HStack {
+                            if viewModel.routePlanningMode != .manual {
+                                RoutePlanStatusBadge(mode: viewModel.routePlanningMode)
+                            }
+
+                            Spacer()
+                            RouteCountBadge(count: viewModel.stops.count)
+                        }
+
+                        if viewModel.isAddingStop {
+                            AddingStopRow(name: viewModel.pendingStopName)
+                        }
+
+                        VStack(spacing: 0) {
+                            ForEach(Array(viewModel.stops.enumerated()), id: \.element.id) { index, stop in
+                                StopRow(
+                                    stop: stop,
+                                    role: RouteStopRole(index: index, total: viewModel.stops.count),
+                                    isSelected: viewModel.selectedStopID == stop.id,
+                                    isRecentlyAdded: viewModel.recentlyAddedStopID == stop.id,
+                                    isPlannedRoute: viewModel.routePlanningMode != .manual,
+                                    isVisited: viewModel.visitedStopIDs.contains(stop.id),
+                                    isActiveNavigationStop: viewModel.activeNavigationStopID == stop.id,
+                                    showsSeparator: index < viewModel.stops.count - 1,
+                                    onSelect: { viewModel.selectedStopID = stop.id },
+                                    onEditNote: { viewModel.startEditingNote(for: stop) },
+                                    onMarkCompleted: { viewModel.markStopCompleted(stop) },
+                                    onMarkIncomplete: { viewModel.markStopIncomplete(stop) },
+                                    onDelete: { viewModel.remove(stop) }
+                                )
+                                .onDrag {
+                                    draggedStopID = stop.id
+                                    return NSItemProvider(object: stop.id.uuidString as NSString)
+                                }
+                                .onDrop(
+                                    of: [UTType.text],
+                                    delegate: StopReorderDropDelegate(
+                                        targetStopID: stop.id,
+                                        draggedStopID: $draggedStopID,
+                                        moveAction: { draggedID, targetID in
+                                            viewModel.moveStop(draggedID, to: targetID)
+                                        }
+                                    )
+                                )
+                            }
+                        }
+                        .background(Color(.secondarySystemBackground).opacity(0.62), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 18)
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 18)
+                .frame(maxWidth: .infinity, minHeight: 300, alignment: .top)
+            }
+            .contentShape(Rectangle())
+            .onDrop(of: [UTType.text], isTargeted: nil) { _ in
+                clearRouteInteraction()
+                return true
             }
             .frame(maxHeight: 300)
         } else {
@@ -327,10 +716,195 @@ private struct PlanSheet: View {
         case 0:
             return "Search above to build your route"
         case 1:
-            return "1 stop saved"
+            return "Saved stop"
         default:
-            return "\(viewModel.stops.count) stops saved in visit order"
+            return "Saved in visit order"
         }
+    }
+
+    private func clearRouteInteraction() {
+        draggedStopID = nil
+        viewModel.selectedStopID = nil
+    }
+
+    private func startEditingRouteTitle() {
+        clearRouteInteraction()
+        routeTitleDraft = viewModel.planTitle
+        isEditingRouteTitle = true
+        DispatchQueue.main.async {
+            isRouteTitleFocused = true
+        }
+    }
+
+    private func saveRouteTitle() {
+        let title = routeTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        isEditingRouteTitle = false
+        isRouteTitleFocused = false
+        viewModel.saveRouteDetails(title: title, isFavorite: viewModel.isPlanFavorite)
+    }
+}
+
+private struct StopReorderDropDelegate: DropDelegate {
+    let targetStopID: UUID
+    @Binding var draggedStopID: UUID?
+    let moveAction: (UUID, UUID) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedStopID, draggedStopID != targetStopID else { return }
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.88)) {
+            moveAction(draggedStopID, targetStopID)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedStopID = nil
+        return true
+    }
+}
+
+private struct RouteCountBadge: View {
+    let count: Int
+
+    var body: some View {
+        Text("\(count) \(count == 1 ? "stop" : "stops")")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(count == 0 ? Color.secondary : Color.blue)
+            .frame(minHeight: 20)
+            .padding(.horizontal, 8)
+            .background(Color(.secondarySystemBackground), in: Capsule())
+            .accessibilityLabel("\(count) stops")
+    }
+}
+
+private struct RoutePlanStatusBadge: View {
+    let mode: RoutePlanningMode
+
+    var body: some View {
+        Label(mode == .shortest ? "Optimized" : mode.title, systemImage: "sparkles")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(Color(.systemBlue))
+            .padding(.horizontal, 8)
+            .frame(minHeight: 20)
+            .background(Color(.systemBlue).opacity(0.1), in: Capsule())
+    }
+}
+
+private struct RouteNavigationControl: View {
+    @ObservedObject var viewModel: HomeMapViewModel
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(.white.opacity(0.18))
+                Image(systemName: viewModel.isNavigatingRoute ? "location.north.line.fill" : "location.north.line")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.76))
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            if viewModel.isNavigatingRoute {
+                Button {
+                    viewModel.stopRouteNavigation()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.white.opacity(0.18))
+                .foregroundStyle(.white)
+                .accessibilityLabel("Stop navigation")
+
+                Button {
+                    viewModel.advanceRouteNavigation()
+                } label: {
+                    Label(nextButtonTitle, systemImage: isFinalStop ? "checkmark" : "arrow.forward")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.white)
+                .foregroundStyle(Color(.systemBlue))
+                .controlSize(.small)
+            } else {
+                Button {
+                    viewModel.startRouteNavigation()
+                } label: {
+                    Label("Start", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.white)
+                .foregroundStyle(Color(.systemBlue))
+                .controlSize(.small)
+                .disabled(viewModel.nextNavigationStop() == nil)
+                .accessibilityLabel("Start navigating")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(navigationBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .shadow(color: Color(.systemBlue).opacity(viewModel.nextNavigationStop() == nil ? 0 : 0.22), radius: 12, y: 4)
+    }
+
+    private var activeStop: PlanStopSnapshot? {
+        guard let activeNavigationStopID = viewModel.activeNavigationStopID else { return nil }
+        return viewModel.stops.first(where: { $0.id == activeNavigationStopID })
+    }
+
+    private var activeStopIndex: Int? {
+        guard let activeNavigationStopID = viewModel.activeNavigationStopID else { return nil }
+        return viewModel.stops.firstIndex(where: { $0.id == activeNavigationStopID })
+    }
+
+    private var isFinalStop: Bool {
+        guard let activeStopIndex else { return false }
+        return activeStopIndex == viewModel.stops.indices.last
+    }
+
+    private var title: String {
+        if viewModel.isNavigatingRoute, let activeStop {
+            return "Navigating to \(activeStop.name)"
+        }
+
+        if let nextStop = viewModel.nextNavigationStop() {
+            return "Start from \(nextStop.name)"
+        }
+
+        return "Route complete"
+    }
+
+    private var subtitle: String {
+        if viewModel.isNavigatingRoute {
+            return "\(viewModel.visitedStopIDs.count) visited"
+        }
+
+        if viewModel.nextNavigationStop() == nil {
+            return "\(viewModel.visitedStopIDs.count) completed"
+        }
+
+        return "Apple Maps will use your current location"
+    }
+
+    private var nextButtonTitle: String {
+        isFinalStop ? "Finish" : "Next"
+    }
+
+    private var navigationBackground: Color {
+        viewModel.nextNavigationStop() == nil ? Color(.tertiaryLabel) : Color(.systemBlue)
     }
 }
 
@@ -379,11 +953,11 @@ private enum RouteStopRole {
     var color: Color {
         switch self {
         case .start:
-            return .green
+            return Color(.systemTeal)
         case .single, .destination:
-            return .red
+            return Color(.systemRed).opacity(0.82)
         case .waypoint:
-            return .secondary
+            return Color(.tertiaryLabel)
         }
     }
 
@@ -411,114 +985,189 @@ private struct StopRow: View {
     let role: RouteStopRole
     let isSelected: Bool
     let isRecentlyAdded: Bool
+    let isPlannedRoute: Bool
+    let isVisited: Bool
+    let isActiveNavigationStop: Bool
+    let showsSeparator: Bool
     let onSelect: () -> Void
     let onEditNote: () -> Void
+    let onMarkCompleted: () -> Void
+    let onMarkIncomplete: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(alignment: .top, spacing: 12) {
-                RouteStopIndicator(role: role, isSelected: isSelected)
+        HStack(alignment: .top, spacing: 12) {
+            RouteStopIndicator(
+                role: role,
+                isSelected: isSelected,
+                isPlannedRoute: isPlannedRoute,
+                isVisited: isVisited,
+                isActiveNavigationStop: isActiveNavigationStop
+            )
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(role.label)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(role.color)
-                        .textCase(.uppercase)
-                    Text(stop.name)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text(stop.formattedAddress)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(roleText)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(roleLabelColor)
+                    .textCase(.uppercase)
+                Text(stop.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(isVisited ? Color.secondary : Color.primary)
+                    .lineLimit(1)
+                Text(stop.formattedAddress)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                if !stop.note.isEmpty {
+                    Text(stop.note)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary)
                         .lineLimit(2)
-                    if !stop.note.isEmpty {
-                        Text(stop.note)
-                            .font(.caption)
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-                            .padding(.top, 2)
+                        .padding(.top, 2)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Menu {
+                Section {
+                    if isVisited {
+                        Button("Mark as not completed", systemImage: "circle", action: onMarkIncomplete)
+                    } else {
+                        Button("Mark as completed", systemImage: "checkmark.circle", action: onMarkCompleted)
                     }
                 }
 
-                Spacer(minLength: 8)
-
-                Menu {
+                Section {
                     Button("Edit note", systemImage: "note.text", action: onEditNote)
                     Button("Remove", systemImage: "trash", role: .destructive, action: onDelete)
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
                 }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
             }
-            .padding(12)
-            .overlay(alignment: .topTrailing) {
-                if isRecentlyAdded {
-                    Text("Added")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.blue)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                        .background(.blue.opacity(0.12), in: Capsule())
-                        .padding(8)
-                }
-            }
-            .background(rowBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .accessibilityLabel("Stop actions")
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .overlay(alignment: .leading) {
+            if isSelected || isActiveNavigationStop {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(Color(.systemBlue).opacity(isActiveNavigationStop ? 0.7 : 0.34))
+                    .frame(width: 3)
+                    .padding(.vertical, 12)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if showsSeparator {
+                Divider()
+                    .padding(.leading, 58)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
         .accessibilityIdentifier("plan-stop-row")
+        .accessibilityAddTraits(.isButton)
     }
 
-    private var rowBackground: Color {
-        if isSelected {
-            return Color.blue.opacity(0.1)
+    private var roleText: String {
+        if isActiveNavigationStop {
+            return "Next stop"
         }
 
         if isRecentlyAdded {
-            return Color.green.opacity(0.1)
+            return "Added"
         }
 
-        return Color(.secondarySystemBackground)
+        return role.label
+    }
+
+    private var roleLabelColor: Color {
+        if isVisited {
+            return Color(.secondaryLabel)
+        }
+
+        if isActiveNavigationStop {
+            return Color(.systemBlue)
+        }
+
+        return isSelected ? Color(.secondaryLabel) : role.color
     }
 }
 
 private struct RouteStopIndicator: View {
     let role: RouteStopRole
     let isSelected: Bool
+    let isPlannedRoute: Bool
+    let isVisited: Bool
+    let isActiveNavigationStop: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             Rectangle()
-                .fill(role.showsTopConnector ? Color.secondary.opacity(0.28) : Color.clear)
-                .frame(width: 2, height: 10)
+                .fill(connectorColor(role.showsTopConnector))
+                .frame(width: isPlannedRoute ? 3 : 2, height: 10)
 
             ZStack {
                 Circle()
-                    .fill(role.color.opacity(isSelected ? 0.18 : 0.1))
-                    .frame(width: 30, height: 30)
+                    .fill(markerFill)
+                    .frame(width: isPlannedRoute ? 32 : 30, height: isPlannedRoute ? 32 : 30)
 
                 if role == .waypoint {
-                    Circle()
-                        .fill(role.color)
-                        .frame(width: 8, height: 8)
+                    if isVisited {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(markerColor)
+                    } else {
+                        Circle()
+                            .fill(markerColor)
+                            .frame(width: isPlannedRoute ? 10 : 8, height: isPlannedRoute ? 10 : 8)
+                    }
                 } else {
-                    Image(systemName: role.systemImage)
+                    Image(systemName: isVisited ? "checkmark" : role.systemImage)
                         .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(role.color)
+                        .foregroundStyle(markerColor)
+                }
+            }
+            .overlay {
+                if isPlannedRoute || isActiveNavigationStop {
+                    Circle()
+                        .strokeBorder(Color(.systemBlue).opacity(isSelected || isActiveNavigationStop ? 0.46 : 0.28), lineWidth: 1)
                 }
             }
 
             Rectangle()
-                .fill(role.showsBottomConnector ? Color.secondary.opacity(0.28) : Color.clear)
-                .frame(width: 2)
+                .fill(connectorColor(role.showsBottomConnector))
+                .frame(width: isPlannedRoute ? 3 : 2)
                 .frame(maxHeight: .infinity)
         }
         .frame(width: 34)
         .frame(minHeight: 58)
         .padding(.top, -10)
+    }
+
+    private var markerColor: Color {
+        if isVisited {
+            return Color(.systemGreen)
+        }
+
+        if isPlannedRoute || isActiveNavigationStop {
+            return Color(.systemBlue)
+        }
+
+        return role.color
+    }
+
+    private var markerFill: Color {
+        markerColor.opacity(isSelected ? 0.16 : (isPlannedRoute ? 0.12 : 0.08))
+    }
+
+    private func connectorColor(_ isVisible: Bool) -> Color {
+        guard isVisible else { return .clear }
+        return isPlannedRoute ? Color(.systemBlue).opacity(0.38) : Color.secondary.opacity(0.28)
     }
 }
 
@@ -619,6 +1268,148 @@ private struct CompactStopPreview: View {
     }
 }
 
+private struct RoutePlannerSheet: View {
+    @ObservedObject var viewModel: HomeMapViewModel
+    @State private var mode: RoutePlanningMode = .shortest
+    @State private var fixedStartStopID: UUID?
+    @State private var fixedEndStopID: UUID?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Optimize by", selection: $mode) {
+                        ForEach(RoutePlanningMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+
+                    Text(mode.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Start") {
+                    StopPickerRow(
+                        title: "Starting point",
+                        placeholder: defaultStartTitle,
+                        stops: viewModel.stops,
+                        selection: $fixedStartStopID
+                    )
+                }
+
+                Section("End") {
+                    StopPickerRow(
+                        title: "Final stop",
+                        placeholder: "No fixed end",
+                        stops: viewModel.stops.filter { $0.id != fixedStartStopID },
+                        selection: $fixedEndStopID
+                    )
+                }
+            }
+            .navigationTitle("Plan Route")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Apply") {
+                        viewModel.applyRoutePlan(
+                            mode: mode,
+                            fixedStartStopID: fixedStartStopID,
+                            fixedEndStopID: fixedEndStopID
+                        )
+                        dismiss()
+                    }
+                    .disabled(viewModel.stops.count < 2)
+                }
+            }
+            .onChange(of: fixedStartStopID) { _, newValue in
+                if fixedEndStopID == newValue {
+                    fixedEndStopID = nil
+                }
+            }
+        }
+    }
+
+    private var defaultStartTitle: String {
+        viewModel.userCoordinate == nil ? "First stop" : "Current location"
+    }
+}
+
+private struct RouteEditorSheet: View {
+    @ObservedObject var viewModel: HomeMapViewModel
+    @State private var routeName: String
+    @State private var isFavorite: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    init(viewModel: HomeMapViewModel) {
+        self.viewModel = viewModel
+        _routeName = State(initialValue: viewModel.planTitle)
+        _isFavorite = State(initialValue: viewModel.isPlanFavorite)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Route name", text: $routeName)
+                        .textInputAutocapitalization(.words)
+                        .accessibilityIdentifier("route-name-field")
+
+                    Toggle(isOn: $isFavorite) {
+                        Label("Bookmarked", systemImage: isFavorite ? "bookmark.fill" : "bookmark")
+                    }
+                }
+
+                Section {
+                    HStack {
+                        Text("Stops")
+                        Spacer()
+                        Text("\(viewModel.stops.count)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Edit Route")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        viewModel.saveRouteDetails(title: routeName, isFavorite: isFavorite)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct StopPickerRow: View {
+    let title: String
+    let placeholder: String
+    let stops: [PlanStopSnapshot]
+    @Binding var selection: UUID?
+
+    var body: some View {
+        Picker(title, selection: $selection) {
+            Text(placeholder).tag(UUID?.none)
+            ForEach(stops) { stop in
+                Text(stop.name).tag(UUID?.some(stop.id))
+            }
+        }
+    }
+}
+
 private struct NoteEditorSheet: View {
     let stop: PlanStopSnapshot
     @Binding var note: String
@@ -690,5 +1481,5 @@ private struct ErrorBanner: View {
 
 #Preview {
     ContentView()
-        .modelContainer(for: [Plan.self, PlanStop.self], inMemory: true)
+        .modelContainer(for: [UserAccount.self, Plan.self, PlanStop.self], inMemory: true)
 }

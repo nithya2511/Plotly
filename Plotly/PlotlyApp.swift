@@ -11,7 +11,7 @@ import SwiftData
 @main
 struct PlotlyApp: App {
     private let modelContainer: ModelContainer = {
-        let schema = Schema([Plan.self, PlanStop.self])
+        let schema = Schema([UserAccount.self, Plan.self, PlanStop.self])
         let configuration = ModelConfiguration(schema: schema)
 
         do {
@@ -21,14 +21,33 @@ struct PlotlyApp: App {
         }
     }()
 
-    init() {
-        GoogleSDKBootstrap.configureIfPossible()
-    }
-
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            AppRootView()
         }
         .modelContainer(modelContainer)
+    }
+}
+
+private struct AppRootView: View {
+    @State private var isShowingSplash = true
+
+    var body: some View {
+        Group {
+            if isShowingSplash {
+                SplashScreen()
+            } else {
+                ContentView()
+            }
+        }
+        .task {
+            do {
+                try await Task.sleep(nanoseconds: 1_200_000_000)
+            } catch {
+                return
+            }
+
+            isShowingSplash = false
+        }
     }
 }

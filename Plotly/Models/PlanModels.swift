@@ -4,6 +4,7 @@ import SwiftData
 @Model
 final class Plan {
     @Attribute(.unique) var id: UUID
+    var userID: UUID?
     var title: String
     var isCurrent: Bool
     var isFavorite: Bool
@@ -12,6 +13,7 @@ final class Plan {
 
     init(
         id: UUID = UUID(),
+        userID: UUID? = nil,
         title: String,
         isCurrent: Bool = false,
         isFavorite: Bool = false,
@@ -19,6 +21,7 @@ final class Plan {
         updatedAt: Date = Date()
     ) {
         self.id = id
+        self.userID = userID
         self.title = title
         self.isCurrent = isCurrent
         self.isFavorite = isFavorite

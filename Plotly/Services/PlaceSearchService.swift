@@ -10,12 +10,6 @@ protocol PlaceSearchService {
 enum PlaceSearchServiceFactory {
     @MainActor
     static func live() -> PlaceSearchService {
-        #if canImport(GooglePlaces)
-        if GoogleSDKBootstrap.configureIfPossible() {
-            return GooglePlacesSearchService()
-        }
-        #endif
-
-        return MapKitPlaceSearchService()
+        MapKitPlaceSearchService()
     }
 }
