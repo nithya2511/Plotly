@@ -1,3 +1,4 @@
+import AuthenticationServices
 import SwiftUI
 
 struct LoginScreen: View {
@@ -61,20 +62,6 @@ struct LoginScreen: View {
 
     private var signInForm: some View {
         VStack(spacing: 14) {
-            TextField("Name", text: $viewModel.displayName)
-                .textInputAutocapitalization(.words)
-                .textFieldStyle(.plain)
-                .padding(14)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            TextField("Email", text: $viewModel.email)
-                .textInputAutocapitalization(.never)
-                .keyboardType(.emailAddress)
-                .autocorrectionDisabled()
-                .textFieldStyle(.plain)
-                .padding(14)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
             if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage)
                     .font(.caption)
@@ -82,15 +69,14 @@ struct LoginScreen: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Button {
-                viewModel.signIn()
-            } label: {
-                Label("Continue", systemImage: "arrow.right")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity, minHeight: 48)
+            SignInWithAppleButton(.signIn) { request in
+                request.requestedScopes = [.fullName, .email]
+            } onCompletion: { result in
+                handleAppleSignIn(result)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!viewModel.canSignIn)
+            .signInWithAppleButtonStyle(.black)
+            .frame(height: 50)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             Button {
                 viewModel.continueAsGuest()
@@ -101,6 +87,32 @@ struct LoginScreen: View {
             }
             .buttonStyle(.bordered)
         }
+    }
+
+    private func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                viewModel.showError(UserFacingErrorMessage.appleSignInInvalidCredential)
+                return
+            }
+
+            viewModel.signInWithApple(
+                userIdentifier: credential.user,
+                email: credential.email,
+                fullName: formattedName(from: credential.fullName)
+            )
+        case .failure(let error):
+            guard (error as? ASAuthorizationError)?.code != .canceled else { return }
+            viewModel.showError(UserFacingErrorMessage.signIn)
+        }
+    }
+
+    private func formattedName(from components: PersonNameComponents?) -> String? {
+        guard let components else { return nil }
+        let formatter = PersonNameComponentsFormatter()
+        let name = formatter.string(from: components).trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
     }
 
     private var savedAccounts: some View {
@@ -171,6 +183,14 @@ private final class PreviewAccountRepository: AccountRepository {
 
     func signIn(displayName: String, email: String) throws -> UserAccountSnapshot {
         UserAccountSnapshot(id: UUID(), displayName: displayName, email: email)
+    }
+
+    func signInWithApple(userIdentifier: String, email: String?, fullName: String?) throws -> UserAccountSnapshot {
+        UserAccountSnapshot(
+            id: UUID(),
+            displayName: fullName ?? "Apple User",
+            email: email ?? "Apple account"
+        )
     }
 
     func selectAccount(id: UUID) throws -> UserAccountSnapshot? {

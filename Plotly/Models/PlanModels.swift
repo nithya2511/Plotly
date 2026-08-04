@@ -41,6 +41,7 @@ final class PlanStop {
     var longitude: Double
     var note: String
     var sortIndex: Int
+    var isCompleted: Bool = false
     var createdAt: Date
     var updatedAt: Date
 
@@ -54,6 +55,7 @@ final class PlanStop {
         longitude: Double,
         note: String = "",
         sortIndex: Int,
+        isCompleted: Bool = false,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -66,6 +68,7 @@ final class PlanStop {
         self.longitude = longitude
         self.note = note
         self.sortIndex = sortIndex
+        self.isCompleted = isCompleted
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -81,7 +84,8 @@ extension PlanStop {
             latitude: latitude,
             longitude: longitude,
             note: note,
-            sortIndex: sortIndex
+            sortIndex: sortIndex,
+            isCompleted: isCompleted
         )
     }
 }

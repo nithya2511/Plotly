@@ -6,6 +6,7 @@ protocol AccountRepository {
     func loadAccounts() throws -> [UserAccountSnapshot]
     func account(id: UUID) throws -> UserAccountSnapshot?
     func signIn(displayName: String, email: String) throws -> UserAccountSnapshot
+    func signInWithApple(userIdentifier: String, email: String?, fullName: String?) throws -> UserAccountSnapshot
     func selectAccount(id: UUID) throws -> UserAccountSnapshot?
 }
 
@@ -47,6 +48,33 @@ final class SwiftDataAccountRepository: AccountRepository {
         return account.snapshot
     }
 
+    func signInWithApple(userIdentifier: String, email: String?, fullName: String?) throws -> UserAccountSnapshot {
+        let trimmedName = fullName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedEmail = email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+
+        if let existingAccount = try account(appleUserID: userIdentifier) {
+            if !trimmedName.isEmpty {
+                existingAccount.displayName = trimmedName
+            }
+            if !normalizedEmail.isEmpty {
+                existingAccount.email = normalizedEmail
+            }
+            existingAccount.lastSignedInAt = Date()
+            try modelContext.save()
+            return existingAccount.snapshot
+        }
+
+        let fallbackName = normalizedEmail.split(separator: "@").first.map(String.init) ?? "Apple User"
+        let account = UserAccount(
+            appleUserID: userIdentifier,
+            displayName: trimmedName.isEmpty ? fallbackName : trimmedName,
+            email: normalizedEmail.isEmpty ? "Apple account" : normalizedEmail
+        )
+        modelContext.insert(account)
+        try modelContext.save()
+        return account.snapshot
+    }
+
     func selectAccount(id: UUID) throws -> UserAccountSnapshot? {
         guard let account = try userAccount(id: id) else {
             return nil
@@ -68,6 +96,14 @@ final class SwiftDataAccountRepository: AccountRepository {
     private func account(email: String) throws -> UserAccount? {
         var descriptor = FetchDescriptor<UserAccount>(
             predicate: #Predicate { $0.email == email }
+        )
+        descriptor.fetchLimit = 1
+        return try modelContext.fetch(descriptor).first
+    }
+
+    private func account(appleUserID: String) throws -> UserAccount? {
+        var descriptor = FetchDescriptor<UserAccount>(
+            predicate: #Predicate { $0.appleUserID == appleUserID }
         )
         descriptor.fetchLimit = 1
         return try modelContext.fetch(descriptor).first

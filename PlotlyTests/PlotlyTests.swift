@@ -17,6 +17,26 @@ final class PlotlyTests: XCTestCase {
         XCTAssertEqual(reloaded, account)
     }
 
+    func testAccountRepositoryCreatesAndReloadsAppleUser() throws {
+        let store = try makeStore()
+        let accountRepository = SwiftDataAccountRepository(modelContext: store.container.mainContext)
+
+        let account = try accountRepository.signInWithApple(
+            userIdentifier: "apple-user-1",
+            email: "APPLE@example.com",
+            fullName: "Apple Traveler"
+        )
+        let returningAccount = try accountRepository.signInWithApple(
+            userIdentifier: "apple-user-1",
+            email: nil,
+            fullName: nil
+        )
+
+        XCTAssertEqual(account.id, returningAccount.id)
+        XCTAssertEqual(returningAccount.displayName, "Apple Traveler")
+        XCTAssertEqual(returningAccount.email, "apple@example.com")
+    }
+
     func testLoginViewModelCanContinueAsGuest() {
         var skippedAccount: UserAccountSnapshot?
         let viewModel = LoginViewModel(
@@ -29,6 +49,18 @@ final class PlotlyTests: XCTestCase {
 
         XCTAssertEqual(skippedAccount, .guest)
         XCTAssertTrue(skippedAccount?.isGuest == true)
+    }
+
+    func testLoginViewModelShowsFriendlyMessageForUnavailableSavedAccount() {
+        let viewModel = LoginViewModel(
+            repository: MockAccountRepository(),
+            onSignedIn: { _ in },
+            onSkipped: { _ in }
+        )
+
+        viewModel.selectAccount(UserAccountSnapshot(id: UUID(), displayName: "Missing", email: "missing@example.com"))
+
+        XCTAssertEqual(viewModel.errorMessage, UserFacingErrorMessage.accountUnavailable)
     }
 
     func testSwiftDataRepositoryCreatesCurrentPlanAndPreventsDuplicateStops() throws {
@@ -87,6 +119,27 @@ final class PlotlyTests: XCTestCase {
         let reloaded = try repository.loadCurrentPlan()
         XCTAssertEqual(reloaded.title, "Berlin Weekend")
         XCTAssertTrue(reloaded.isFavorite)
+    }
+
+    func testSwiftDataRepositoryPersistsStopCompletion() throws {
+        let store = try makeStore()
+        let repository = store.repository
+        let plan = try repository.addStop(
+            PlaceDetails(
+                placeID: "visited-stop",
+                name: "Visited Stop",
+                formattedAddress: "Visited Stop Address",
+                latitude: 52.5,
+                longitude: 13.4
+            )
+        )
+        let stopID = try XCTUnwrap(plan.stops.first?.id)
+
+        let completed = try repository.updateStopCompletion(id: stopID, isCompleted: true)
+        let reloaded = try repository.loadCurrentPlan()
+
+        XCTAssertEqual(completed.stops.first?.isCompleted, true)
+        XCTAssertEqual(reloaded.stops.first?.isCompleted, true)
     }
 
     func testSwiftDataRepositoryMovesStopsAndPersistsOrder() throws {
@@ -320,6 +373,31 @@ final class PlotlyTests: XCTestCase {
         XCTAssertNotNil(viewModel.selectedStopID)
     }
 
+    func testViewModelShowsFriendlyMessageWhenPlaceSearchFails() async throws {
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                ),
+                suggestionsError: TestError()
+            ),
+            locationService: MockLocationService()
+        )
+
+        viewModel.load()
+        viewModel.searchText = "Coffee"
+        try await Task.sleep(nanoseconds: 420_000_000)
+
+        XCTAssertEqual(viewModel.errorMessage, UserFacingErrorMessage.placeSearch)
+        XCTAssertTrue(viewModel.suggestions.isEmpty)
+    }
+
     func testViewModelMovesStopsByDraggedStopID() throws {
         let first = makeStop(placeID: "first", name: "First", sortIndex: 0)
         let second = makeStop(placeID: "second", name: "Second", sortIndex: 1)
@@ -483,7 +561,7 @@ final class PlotlyTests: XCTestCase {
         XCTAssertNil(viewModel.selectedStopID)
     }
 
-    func testViewModelStartsAndAdvancesRouteNavigation() throws {
+    func testViewModelCompletesActiveStopOnReturnAndWaitsForNextGoAction() throws {
         let first = makeStop(placeID: "first", name: "First", sortIndex: 0)
         let second = makeStop(placeID: "second", name: "Second", sortIndex: 1)
         let third = makeStop(placeID: "third", name: "Third", sortIndex: 2)
@@ -512,14 +590,23 @@ final class PlotlyTests: XCTestCase {
         XCTAssertEqual(viewModel.selectedStopID, first.id)
         XCTAssertEqual(navigationService.openedStopIDs, [first.id])
 
-        viewModel.advanceRouteNavigation()
+        viewModel.completeActiveNavigationStopOnReturn()
 
         XCTAssertTrue(viewModel.visitedStopIDs.contains(first.id))
+        XCTAssertNil(viewModel.activeNavigationStopID)
+        XCTAssertEqual(viewModel.nextNavigationStop()?.id, second.id)
+        XCTAssertEqual(viewModel.selectedStopID, second.id)
+        XCTAssertEqual(navigationService.openedStopIDs, [first.id])
+
+        viewModel.goToStop(second)
         XCTAssertEqual(viewModel.activeNavigationStopID, second.id)
         XCTAssertEqual(navigationService.openedStopIDs, [first.id, second.id])
 
-        viewModel.advanceRouteNavigation()
-        viewModel.advanceRouteNavigation()
+        viewModel.completeActiveNavigationStopOnReturn()
+        XCTAssertEqual(viewModel.nextNavigationStop()?.id, third.id)
+
+        viewModel.goToStop(third)
+        viewModel.completeActiveNavigationStopOnReturn()
 
         XCTAssertFalse(viewModel.isNavigatingRoute)
         XCTAssertNil(viewModel.activeNavigationStopID)
@@ -553,7 +640,7 @@ final class PlotlyTests: XCTestCase {
         XCTAssertTrue(viewModel.visitedStopIDs.isEmpty)
     }
 
-    func testViewModelMarkingStopCompletedNavigatesToNextStop() throws {
+    func testViewModelMarkingStopCompletedSuggestsNextStopWithoutOpeningMaps() throws {
         let first = makeStop(placeID: "first", name: "First", sortIndex: 0)
         let second = makeStop(placeID: "second", name: "Second", sortIndex: 1)
         let navigationService = MockRouteNavigationService()
@@ -578,9 +665,10 @@ final class PlotlyTests: XCTestCase {
 
         XCTAssertEqual(viewModel.visitedStopIDs, [first.id])
         XCTAssertTrue(viewModel.isNavigatingRoute)
-        XCTAssertEqual(viewModel.activeNavigationStopID, second.id)
+        XCTAssertNil(viewModel.activeNavigationStopID)
+        XCTAssertEqual(viewModel.nextNavigationStop()?.id, second.id)
         XCTAssertEqual(viewModel.selectedStopID, second.id)
-        XCTAssertEqual(navigationService.openedStopIDs, [second.id])
+        XCTAssertTrue(navigationService.openedStopIDs.isEmpty)
     }
 
     func testViewModelStartNavigationSkipsCompletedStops() throws {
@@ -609,7 +697,33 @@ final class PlotlyTests: XCTestCase {
         viewModel.startRouteNavigation()
 
         XCTAssertEqual(viewModel.activeNavigationStopID, second.id)
-        XCTAssertEqual(navigationService.openedStopIDs, [second.id, second.id])
+        XCTAssertEqual(navigationService.openedStopIDs, [second.id])
+    }
+
+    func testViewModelShowsFriendlyMessageWhenMapsDoesNotOpen() throws {
+        let stop = makeStop(placeID: "stop", name: "Stop", sortIndex: 0)
+        let navigationService = MockRouteNavigationService(shouldOpenDirections: false)
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(stops: [stop]),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                )
+            ),
+            locationService: MockLocationService(),
+            navigationService: navigationService
+        )
+
+        viewModel.load()
+        viewModel.goToStop(stop)
+
+        XCTAssertNil(viewModel.activeNavigationStopID)
+        XCTAssertEqual(viewModel.errorMessage, UserFacingErrorMessage.openDirections)
     }
 
     func testRoutePlannerRespectsFixedStartAndEndStops() {
@@ -707,6 +821,14 @@ private final class MockAccountRepository: AccountRepository {
         UserAccountSnapshot(id: UUID(), displayName: displayName, email: email)
     }
 
+    func signInWithApple(userIdentifier: String, email: String?, fullName: String?) throws -> UserAccountSnapshot {
+        UserAccountSnapshot(
+            id: UUID(),
+            displayName: fullName ?? "Apple User",
+            email: email ?? "Apple account"
+        )
+    }
+
     func selectAccount(id: UUID) throws -> UserAccountSnapshot? {
         nil
     }
@@ -792,7 +914,27 @@ private final class MockPlanRepository: PlanRepository {
                 latitude: stop.latitude,
                 longitude: stop.longitude,
                 note: note,
-                sortIndex: stop.sortIndex
+                sortIndex: stop.sortIndex,
+                isCompleted: stop.isCompleted
+            )
+        }
+        plan = PlanSnapshot(id: plan.id, title: plan.title, isFavorite: plan.isFavorite, stops: updatedStops)
+        return plan
+    }
+
+    func updateStopCompletion(id: UUID, isCompleted: Bool) throws -> PlanSnapshot {
+        let updatedStops = plan.stops.map { stop in
+            guard stop.id == id else { return stop }
+            return PlanStopSnapshot(
+                id: stop.id,
+                placeID: stop.placeID,
+                name: stop.name,
+                formattedAddress: stop.formattedAddress,
+                latitude: stop.latitude,
+                longitude: stop.longitude,
+                note: stop.note,
+                sortIndex: stop.sortIndex,
+                isCompleted: isCompleted
             )
         }
         plan = PlanSnapshot(id: plan.id, title: plan.title, isFavorite: plan.isFavorite, stops: updatedStops)
@@ -825,7 +967,8 @@ private final class MockPlanRepository: PlanRepository {
                 latitude: stop.latitude,
                 longitude: stop.longitude,
                 note: stop.note,
-                sortIndex: index
+                sortIndex: index,
+                isCompleted: stop.isCompleted
             )
         }
         plan = PlanSnapshot(id: plan.id, title: plan.title, isFavorite: plan.isFavorite, stops: reindexedStops)
@@ -849,7 +992,8 @@ private final class MockPlanRepository: PlanRepository {
                 latitude: stop.latitude,
                 longitude: stop.longitude,
                 note: stop.note,
-                sortIndex: index
+                sortIndex: index,
+                isCompleted: stop.isCompleted
             )
         }
         plan = PlanSnapshot(id: plan.id, title: plan.title, isFavorite: plan.isFavorite, stops: reindexedStops)
@@ -861,18 +1005,33 @@ private final class MockPlanRepository: PlanRepository {
 private final class MockPlaceSearchService: PlaceSearchService {
     private let stubSuggestions: [PlaceSuggestion]
     private let stubDetails: PlaceDetails
+    private let suggestionsError: Error?
+    private let detailsError: Error?
 
-    init(suggestions: [PlaceSuggestion], details: PlaceDetails) {
+    init(
+        suggestions: [PlaceSuggestion],
+        details: PlaceDetails,
+        suggestionsError: Error? = nil,
+        detailsError: Error? = nil
+    ) {
         self.stubSuggestions = suggestions
         self.stubDetails = details
+        self.suggestionsError = suggestionsError
+        self.detailsError = detailsError
     }
 
     func suggestions(for query: String, near coordinate: CLLocationCoordinate2D?) async throws -> [PlaceSuggestion] {
-        stubSuggestions
+        if let suggestionsError {
+            throw suggestionsError
+        }
+        return stubSuggestions
     }
 
     func details(for suggestion: PlaceSuggestion) async throws -> PlaceDetails {
-        stubDetails
+        if let detailsError {
+            throw detailsError
+        }
+        return stubDetails
     }
 }
 
@@ -885,10 +1044,17 @@ private final class MockLocationService: LocationService {
 
 @MainActor
 private final class MockRouteNavigationService: RouteNavigationService {
+    private let shouldOpenDirections: Bool
     private(set) var openedStopIDs: [UUID] = []
+
+    init(shouldOpenDirections: Bool = true) {
+        self.shouldOpenDirections = shouldOpenDirections
+    }
 
     func openDirections(to stop: PlanStopSnapshot) -> Bool {
         openedStopIDs.append(stop.id)
-        return true
+        return shouldOpenDirections
     }
 }
+
+private struct TestError: Error {}

@@ -4,6 +4,7 @@ import SwiftData
 @Model
 final class UserAccount {
     @Attribute(.unique) var id: UUID
+    var appleUserID: String?
     var displayName: String
     var email: String
     var createdAt: Date
@@ -11,12 +12,14 @@ final class UserAccount {
 
     init(
         id: UUID = UUID(),
+        appleUserID: String? = nil,
         displayName: String,
         email: String,
         createdAt: Date = Date(),
         lastSignedInAt: Date = Date()
     ) {
         self.id = id
+        self.appleUserID = appleUserID
         self.displayName = displayName
         self.email = email
         self.createdAt = createdAt

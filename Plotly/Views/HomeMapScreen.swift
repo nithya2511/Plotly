@@ -98,6 +98,7 @@ private struct AccountLoadingView: View {
 }
 
 struct HomeMapScreen: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var viewModel: HomeMapViewModel
     private let account: UserAccountSnapshot
     private let onSignOut: () -> Void
@@ -198,6 +199,10 @@ struct HomeMapScreen: View {
             withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                 sheetDetent = .expanded
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            viewModel.completeActiveNavigationStopOnReturn()
         }
         .sheet(item: $viewModel.noteEditorStop) { stop in
             NoteEditorSheet(stop: stop, note: $viewModel.noteDraft) {
@@ -457,11 +462,11 @@ private struct PlanSheet: View {
     }
 
     private var collapsedContentHeight: CGFloat {
-        viewModel.stops.isEmpty ? 190 : 252
+        viewModel.stops.isEmpty ? 190 : 196
     }
 
     private var expandedContentHeight: CGFloat {
-        viewModel.stops.isEmpty ? 260 : 520
+        viewModel.stops.isEmpty ? 260 : 460
     }
 
     private var activeHeight: CGFloat {
@@ -477,14 +482,9 @@ private struct PlanSheet: View {
             dragHandle
             sheetHeader
             sheetContent
-            if !viewModel.stops.isEmpty {
-                RouteNavigationControl(viewModel: viewModel)
-                    .padding(.horizontal, 16)
-            }
         }
         .frame(height: displayedHeight, alignment: .top)
         .clipped()
-        .padding(.bottom, 16)
         .background(.regularMaterial, in: UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22))
         .overlay(alignment: .top) {
             UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22)
@@ -654,9 +654,11 @@ private struct PlanSheet: View {
                                     isRecentlyAdded: viewModel.recentlyAddedStopID == stop.id,
                                     isPlannedRoute: viewModel.routePlanningMode != .manual,
                                     isVisited: viewModel.visitedStopIDs.contains(stop.id),
+                                    isNextNavigationStop: viewModel.nextNavigationStop()?.id == stop.id,
                                     isActiveNavigationStop: viewModel.activeNavigationStopID == stop.id,
                                     showsSeparator: index < viewModel.stops.count - 1,
                                     onSelect: { viewModel.selectedStopID = stop.id },
+                                    onGo: { viewModel.goToStop(stop) },
                                     onEditNote: { viewModel.startEditingNote(for: stop) },
                                     onMarkCompleted: { viewModel.markStopCompleted(stop) },
                                     onMarkIncomplete: { viewModel.markStopIncomplete(stop) },
@@ -681,7 +683,7 @@ private struct PlanSheet: View {
                         .background(Color(.secondarySystemBackground).opacity(0.62), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 18)
+                    .padding(.bottom, 24)
                 }
                 .frame(maxWidth: .infinity, minHeight: 300, alignment: .top)
             }
@@ -690,13 +692,17 @@ private struct PlanSheet: View {
                 clearRouteInteraction()
                 return true
             }
-            .frame(maxHeight: 300)
+            .frame(maxHeight: .infinity)
         } else {
+            let nextStop = viewModel.nextNavigationStop()
+            let previewStop = nextStop ?? viewModel.stops.last ?? viewModel.stops[0]
             CompactStopPreview(
-                stop: viewModel.stops.last ?? viewModel.stops[0],
+                stop: previewStop,
                 count: viewModel.stops.count,
                 isAdding: viewModel.isAddingStop,
+                isNextStop: nextStop != nil,
                 pendingStopName: viewModel.pendingStopName,
+                onGo: { viewModel.goToStop(previewStop) },
                 onExpand: {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                         detent = .expanded
@@ -987,9 +993,11 @@ private struct StopRow: View {
     let isRecentlyAdded: Bool
     let isPlannedRoute: Bool
     let isVisited: Bool
+    let isNextNavigationStop: Bool
     let isActiveNavigationStop: Bool
     let showsSeparator: Bool
     let onSelect: () -> Void
+    let onGo: () -> Void
     let onEditNote: () -> Void
     let onMarkCompleted: () -> Void
     let onMarkIncomplete: () -> Void
@@ -1029,27 +1037,44 @@ private struct StopRow: View {
 
             Spacer(minLength: 8)
 
-            Menu {
-                Section {
-                    if isVisited {
-                        Button("Mark as not completed", systemImage: "circle", action: onMarkIncomplete)
-                    } else {
-                        Button("Mark as completed", systemImage: "checkmark.circle", action: onMarkCompleted)
+            HStack(spacing: 6) {
+                if isNextNavigationStop {
+                    Button(action: onGo) {
+                        Label("Go", systemImage: "location.north.fill")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption.weight(.bold))
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .accessibilityLabel("Go to \(stop.name)")
                 }
 
-                Section {
-                    Button("Edit note", systemImage: "note.text", action: onEditNote)
-                    Button("Remove", systemImage: "trash", role: .destructive, action: onDelete)
+                Menu {
+                    Section("Navigation") {
+                        Button(isVisited ? "Go again" : "Go to stop", systemImage: "location.north.line", action: onGo)
+                    }
+
+                    Section("Progress") {
+                        if isVisited {
+                            Button("Mark as yet to travel", systemImage: "circle", action: onMarkIncomplete)
+                        } else {
+                            Button("Mark as traversed", systemImage: "checkmark.circle", action: onMarkCompleted)
+                        }
+                    }
+
+                    Section {
+                        Button("Edit note", systemImage: "note.text", action: onEditNote)
+                        Button("Remove", systemImage: "trash", role: .destructive, action: onDelete)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
                 }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
+                .accessibilityLabel("Stop actions")
             }
-            .accessibilityLabel("Stop actions")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -1075,7 +1100,15 @@ private struct StopRow: View {
 
     private var roleText: String {
         if isActiveNavigationStop {
-            return "Next stop"
+            return "In Maps"
+        }
+
+        if isVisited {
+            return "Traversed"
+        }
+
+        if isNextNavigationStop {
+            return "Next to travel"
         }
 
         if isRecentlyAdded {
@@ -1230,41 +1263,64 @@ private struct CompactStopPreview: View {
     let stop: PlanStopSnapshot
     let count: Int
     let isAdding: Bool
+    let isNextStop: Bool
     let pendingStopName: String?
+    let onGo: () -> Void
     let onExpand: () -> Void
 
     var body: some View {
-        Button(action: onExpand) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(.blue.opacity(0.14))
-                    Image(systemName: isAdding ? "clock" : "mappin.and.ellipse")
-                        .font(.headline)
+        HStack(spacing: 10) {
+            Button(action: onExpand) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(.blue.opacity(0.14))
+                        Image(systemName: isAdding ? "clock" : "location.north.circle.fill")
+                            .font(.headline)
+                            .foregroundStyle(.blue)
+                    }
+                    .frame(width: 38, height: 38)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(labelText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(isAdding ? (pendingStopName ?? "Adding stop") : stop.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    Text(count == 1 ? "View" : "View all")
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.blue)
                 }
-                .frame(width: 38, height: 38)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(isAdding ? "Updating route list" : "Latest stop")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(isAdding ? (pendingStopName ?? "Adding stop") : stop.name)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                }
-
-                Spacer()
-
-                Text(count == 1 ? "View" : "View all")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.blue)
             }
-            .padding(13)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .buttonStyle(.plain)
+
+            if isNextStop {
+                Button(action: onGo) {
+                    Label("Go", systemImage: "location.north.fill")
+                        .labelStyle(.iconOnly)
+                        .font(.subheadline.weight(.bold))
+                        .frame(width: 38, height: 38)
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityLabel("Go to \(stop.name)")
+            }
         }
-        .buttonStyle(.plain)
+        .padding(13)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var labelText: String {
+        if isAdding {
+            return "Updating route list"
+        }
+
+        return isNextStop ? "Next to travel" : "Route complete"
     }
 }
 
@@ -1465,7 +1521,7 @@ private struct ErrorBanner: View {
                 .foregroundStyle(.orange)
             Text(message)
                 .font(.caption)
-                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer()
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
@@ -1476,6 +1532,8 @@ private struct ErrorBanner: View {
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
         .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isModal)
     }
 }
 

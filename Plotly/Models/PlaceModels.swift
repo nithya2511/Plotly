@@ -43,6 +43,29 @@ struct PlanStopSnapshot: Identifiable, Equatable {
     let longitude: Double
     let note: String
     let sortIndex: Int
+    let isCompleted: Bool
+
+    init(
+        id: UUID,
+        placeID: String,
+        name: String,
+        formattedAddress: String,
+        latitude: Double,
+        longitude: Double,
+        note: String,
+        sortIndex: Int,
+        isCompleted: Bool = false
+    ) {
+        self.id = id
+        self.placeID = placeID
+        self.name = name
+        self.formattedAddress = formattedAddress
+        self.latitude = latitude
+        self.longitude = longitude
+        self.note = note
+        self.sortIndex = sortIndex
+        self.isCompleted = isCompleted
+    }
 
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)

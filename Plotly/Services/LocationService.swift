@@ -19,6 +19,7 @@ final class CoreLocationService: NSObject, LocationService, CLLocationManagerDel
 
     func requestCurrentLocation() async -> CLLocationCoordinate2D? {
         return await withCheckedContinuation { continuation in
+            self.continuation?.resume(returning: nil)
             self.continuation = continuation
 
             switch manager.authorizationStatus {

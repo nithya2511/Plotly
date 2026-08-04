@@ -67,7 +67,7 @@ final class HomeMapViewModel: ObservableObject {
             apply(try repository.loadCurrentPlan())
             refreshBookmarkedPlans()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.loadRoute
         }
 
         Task {
@@ -106,7 +106,7 @@ final class HomeMapViewModel: ObservableObject {
                 }
                 clearSearch()
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = UserFacingErrorMessage.addStop
             }
         }
     }
@@ -116,7 +116,7 @@ final class HomeMapViewModel: ObservableObject {
             apply(try repository.updatePlanDetails(title: title, isFavorite: isFavorite))
             refreshBookmarkedPlans()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.saveRoute
         }
     }
 
@@ -131,7 +131,7 @@ final class HomeMapViewModel: ObservableObject {
             resetNavigationProgress()
             refreshBookmarkedPlans()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.openRoute
         }
     }
 
@@ -144,7 +144,7 @@ final class HomeMapViewModel: ObservableObject {
             resetNavigationProgress()
             refreshBookmarkedPlans()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.createRoute
         }
     }
 
@@ -161,7 +161,7 @@ final class HomeMapViewModel: ObservableObject {
             noteEditorStop = nil
             noteDraft = ""
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.saveNote
         }
     }
 
@@ -177,7 +177,7 @@ final class HomeMapViewModel: ObservableObject {
                 recentlyAddedStopID = nil
             }
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.removeStop
         }
     }
 
@@ -187,7 +187,7 @@ final class HomeMapViewModel: ObservableObject {
             routePlanningMode = .manual
             resetNavigationProgress()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.reorderStops
         }
     }
 
@@ -222,12 +222,18 @@ final class HomeMapViewModel: ObservableObject {
             routePlanningMode = mode
             resetNavigationProgress()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.planRoute
         }
     }
 
     func startRouteNavigation() {
-        navigateToNextUnvisitedStop()
+        guard let nextStop = nextUnvisitedStop() else {
+            isNavigatingRoute = false
+            activeNavigationStopID = nil
+            return
+        }
+
+        goToStop(nextStop)
     }
 
     func advanceRouteNavigation() {
@@ -236,45 +242,71 @@ final class HomeMapViewModel: ObservableObject {
             return
         }
 
-        visitedStopIDs.insert(activeNavigationStopID)
-        let activeIndex = stops.firstIndex { $0.id == activeNavigationStopID }
-        navigateToNextUnvisitedStop(after: activeIndex)
+        do {
+            apply(try repository.updateStopCompletion(id: activeNavigationStopID, isCompleted: true))
+            self.activeNavigationStopID = nil
+            focusNextNavigationStop()
+        } catch {
+            errorMessage = UserFacingErrorMessage.updateProgress
+        }
     }
 
     func stopRouteNavigation() {
         isNavigatingRoute = false
         activeNavigationStopID = nil
+        selectedStopID = nextUnvisitedStop()?.id
     }
 
     func markStopCompleted(_ stop: PlanStopSnapshot) {
-        visitedStopIDs.insert(stop.id)
-        let completedIndex = stops.firstIndex { $0.id == stop.id }
-        navigateToNextUnvisitedStop(after: completedIndex)
+        do {
+            apply(try repository.updateStopCompletion(id: stop.id, isCompleted: true))
+            if activeNavigationStopID == stop.id {
+                activeNavigationStopID = nil
+            }
+            focusNextNavigationStop()
+        } catch {
+            errorMessage = UserFacingErrorMessage.updateProgress
+        }
     }
 
     func markStopIncomplete(_ stop: PlanStopSnapshot) {
-        visitedStopIDs.remove(stop.id)
-        if activeNavigationStopID == stop.id {
+        do {
+            apply(try repository.updateStopCompletion(id: stop.id, isCompleted: false))
+            if activeNavigationStopID == stop.id {
+                activeNavigationStopID = nil
+                isNavigatingRoute = false
+            }
+            selectedStopID = stop.id
+        } catch {
+            errorMessage = UserFacingErrorMessage.updateProgress
+        }
+    }
+
+    func goToStop(_ stop: PlanStopSnapshot) {
+        isNavigatingRoute = true
+        activeNavigationStopID = stop.id
+        selectedStopID = stop.id
+        let didOpenDirections = navigationService.openDirections(to: stop)
+        if !didOpenDirections {
+            isNavigatingRoute = nextUnvisitedStop() != nil
             activeNavigationStopID = nil
-            isNavigatingRoute = false
+            errorMessage = UserFacingErrorMessage.openDirections
+        }
+    }
+
+    func completeActiveNavigationStopOnReturn() {
+        guard let activeNavigationStopID else { return }
+        do {
+            apply(try repository.updateStopCompletion(id: activeNavigationStopID, isCompleted: true))
+            self.activeNavigationStopID = nil
+            focusNextNavigationStop()
+        } catch {
+            errorMessage = UserFacingErrorMessage.updateProgress
         }
     }
 
     func nextNavigationStop() -> PlanStopSnapshot? {
         nextUnvisitedStop()
-    }
-
-    private func navigateToNextUnvisitedStop(after index: Int? = nil) {
-        guard let nextStop = nextUnvisitedStop(after: index) else {
-            isNavigatingRoute = false
-            activeNavigationStopID = nil
-            return
-        }
-
-        isNavigatingRoute = true
-        activeNavigationStopID = nextStop.id
-        selectedStopID = nextStop.id
-        navigationService.openDirections(to: nextStop)
     }
 
     private func nextUnvisitedStop(after index: Int? = nil) -> PlanStopSnapshot? {
@@ -286,11 +318,21 @@ final class HomeMapViewModel: ObservableObject {
         return stops[startIndex...].first { !visitedStopIDs.contains($0.id) }
     }
 
+    private func focusNextNavigationStop() {
+        if let nextStop = nextUnvisitedStop() {
+            isNavigatingRoute = true
+            selectedStopID = nextStop.id
+        } else {
+            isNavigatingRoute = false
+            selectedStopID = nil
+        }
+    }
+
     func refreshBookmarkedPlans() {
         do {
             bookmarkedPlans = try repository.loadBookmarkedPlans()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.loadBookmarks
         }
     }
 
@@ -318,7 +360,7 @@ final class HomeMapViewModel: ObservableObject {
             } catch {
                 suggestions = []
                 isSearching = false
-                errorMessage = error.localizedDescription
+                errorMessage = UserFacingErrorMessage.placeSearch
             }
         }
     }
@@ -328,11 +370,11 @@ final class HomeMapViewModel: ObservableObject {
         planTitle = plan.title
         isPlanFavorite = plan.isFavorite
         stops = plan.stops.sorted { $0.sortIndex < $1.sortIndex }
+        visitedStopIDs = Set(stops.filter(\.isCompleted).map(\.id))
     }
 
     private func resetNavigationProgress() {
         isNavigatingRoute = false
         activeNavigationStopID = nil
-        visitedStopIDs = []
     }
 }

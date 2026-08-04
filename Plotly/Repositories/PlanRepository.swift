@@ -10,6 +10,7 @@ protocol PlanRepository {
     func addStop(_ place: PlaceDetails) throws -> PlanSnapshot
     func updatePlanDetails(title: String, isFavorite: Bool) throws -> PlanSnapshot
     func updateStopNote(id: UUID, note: String) throws -> PlanSnapshot
+    func updateStopCompletion(id: UUID, isCompleted: Bool) throws -> PlanSnapshot
     func removeStop(id: UUID) throws -> PlanSnapshot
     func moveStops(from source: IndexSet, to destination: Int) throws -> PlanSnapshot
     func reorderStops(_ orderedStopIDs: [UUID]) throws -> PlanSnapshot
@@ -120,6 +121,19 @@ final class SwiftDataPlanRepository: PlanRepository {
         }
 
         stop.note = note
+        stop.updatedAt = Date()
+        plan.updatedAt = Date()
+        try modelContext.save()
+        return try snapshot(for: plan)
+    }
+
+    func updateStopCompletion(id: UUID, isCompleted: Bool) throws -> PlanSnapshot {
+        let plan = try currentPlan()
+        guard let stop = try stops(for: plan.id).first(where: { $0.id == id }) else {
+            return try snapshot(for: plan)
+        }
+
+        stop.isCompleted = isCompleted
         stop.updatedAt = Date()
         plan.updatedAt = Date()
         try modelContext.save()

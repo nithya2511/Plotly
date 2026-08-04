@@ -30,7 +30,7 @@ final class LoginViewModel: ObservableObject {
         do {
             savedAccounts = try repository.loadAccounts()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.loadAccounts
         }
     }
 
@@ -41,22 +41,40 @@ final class LoginViewModel: ObservableObject {
             let account = try repository.signIn(displayName: displayName, email: email)
             onSignedIn(account)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.signIn
+        }
+    }
+
+    func signInWithApple(userIdentifier: String, email: String?, fullName: String?) {
+        do {
+            let account = try repository.signInWithApple(
+                userIdentifier: userIdentifier,
+                email: email,
+                fullName: fullName
+            )
+            onSignedIn(account)
+        } catch {
+            errorMessage = UserFacingErrorMessage.signIn
         }
     }
 
     func selectAccount(_ account: UserAccountSnapshot) {
         do {
             guard let selectedAccount = try repository.selectAccount(id: account.id) else {
+                errorMessage = UserFacingErrorMessage.accountUnavailable
                 return
             }
             onSignedIn(selectedAccount)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = UserFacingErrorMessage.signIn
         }
     }
 
     func continueAsGuest() {
         onSkipped(.guest)
+    }
+
+    func showError(_ message: String) {
+        errorMessage = message
     }
 }
