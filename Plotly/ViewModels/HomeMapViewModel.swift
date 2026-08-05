@@ -1,6 +1,8 @@
 import Combine
 import CoreLocation
 import Foundation
+import MapKit
+import SwiftUI
 
 @MainActor
 final class HomeMapViewModel: ObservableObject {
@@ -26,6 +28,8 @@ final class HomeMapViewModel: ObservableObject {
     @Published private(set) var isNavigatingRoute = false
     @Published private(set) var activeNavigationStopID: UUID?
     @Published private(set) var visitedStopIDs: Set<UUID> = []
+    @Published var draftMapPinCoordinate: CLLocationCoordinate2D?
+    @Published private(set) var draftMapPinDetails: PlaceDetails?
     @Published var selectedStopID: UUID?
     @Published var noteEditorStop: PlanStopSnapshot?
     @Published var noteDraft = ""
@@ -45,6 +49,7 @@ final class HomeMapViewModel: ObservableObject {
     private let locationService: LocationService
     private let navigationService: RouteNavigationService
     private var searchTask: Task<Void, Never>?
+    private var mapFeatureDetailsTask: Task<Void, Never>?
 
     init(
         repository: PlanRepository,
@@ -60,6 +65,7 @@ final class HomeMapViewModel: ObservableObject {
 
     deinit {
         searchTask?.cancel()
+        mapFeatureDetailsTask?.cancel()
     }
 
     func load() {
@@ -108,6 +114,90 @@ final class HomeMapViewModel: ObservableObject {
             } catch {
                 errorMessage = UserFacingErrorMessage.addStop
             }
+        }
+    }
+
+    func stageMapPin(at coordinate: CLLocationCoordinate2D) {
+        searchTask?.cancel()
+        mapFeatureDetailsTask?.cancel()
+        clearSearch()
+        draftMapPinCoordinate = coordinate
+        draftMapPinDetails = nil
+        selectedStopID = nil
+        errorMessage = nil
+    }
+
+    func stageMapFeature(_ mapFeature: MapFeature) {
+        searchTask?.cancel()
+        mapFeatureDetailsTask?.cancel()
+        clearSearch()
+
+        let fallbackDetails = PlaceDetails(
+            placeID: mapFeaturePlaceID(for: mapFeature),
+            name: mapFeature.title?.nilIfBlank ?? "Selected Place",
+            formattedAddress: formattedCoordinate(mapFeature.coordinate),
+            latitude: mapFeature.coordinate.latitude,
+            longitude: mapFeature.coordinate.longitude
+        )
+        stageMapPlace(fallbackDetails)
+
+        mapFeatureDetailsTask = Task {
+            do {
+                let details = try await searchService.details(for: mapFeature)
+                guard !Task.isCancelled else { return }
+                stageMapPlace(details)
+            } catch {
+                guard !Task.isCancelled else { return }
+                draftMapPinDetails = fallbackDetails
+            }
+        }
+    }
+
+    func stageMapPlace(_ details: PlaceDetails) {
+        draftMapPinCoordinate = details.coordinate
+        draftMapPinDetails = details
+        selectedStopID = nil
+        errorMessage = nil
+    }
+
+    func cancelDraftMapPin() {
+        mapFeatureDetailsTask?.cancel()
+        draftMapPinCoordinate = nil
+        draftMapPinDetails = nil
+    }
+
+    func confirmDraftMapPin() {
+        guard let coordinate = draftMapPinCoordinate else { return }
+        mapFeatureDetailsTask?.cancel()
+        isAddingStop = true
+        pendingStopName = draftMapPinDetails?.name ?? "Dropped Pin"
+        errorMessage = nil
+
+        defer {
+            isAddingStop = false
+            pendingStopName = nil
+        }
+
+        do {
+            let details = draftMapPinDetails ?? PlaceDetails(
+                placeID: manualPinPlaceID(for: coordinate),
+                name: "Dropped Pin",
+                formattedAddress: formattedCoordinate(coordinate),
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            )
+            let plan = try repository.addStop(details)
+            apply(plan)
+            routePlanningMode = .manual
+            resetNavigationProgress()
+            draftMapPinCoordinate = nil
+            draftMapPinDetails = nil
+            if let added = plan.stops.first(where: { $0.placeID == details.placeID }) {
+                selectedStopID = added.id
+                recentlyAddedStopID = added.id
+            }
+        } catch {
+            errorMessage = UserFacingErrorMessage.addMapPin
         }
     }
 
@@ -376,5 +466,36 @@ final class HomeMapViewModel: ObservableObject {
     private func resetNavigationProgress() {
         isNavigatingRoute = false
         activeNavigationStopID = nil
+    }
+
+    private func manualPinPlaceID(for coordinate: CLLocationCoordinate2D) -> String {
+        "manual-pin:\(coordinate.latitude.rounded(toPlaces: 6)),\(coordinate.longitude.rounded(toPlaces: 6))"
+    }
+
+    private func mapFeaturePlaceID(for mapFeature: MapFeature) -> String {
+        [
+            "map-feature",
+            mapFeature.title?.nilIfBlank ?? "untitled",
+            mapFeature.coordinate.latitude.rounded(toPlaces: 6),
+            mapFeature.coordinate.longitude.rounded(toPlaces: 6)
+        ]
+        .joined(separator: ":")
+    }
+
+    private func formattedCoordinate(_ coordinate: CLLocationCoordinate2D) -> String {
+        "\(coordinate.latitude.rounded(toPlaces: 5)), \(coordinate.longitude.rounded(toPlaces: 5))"
+    }
+}
+
+private extension Double {
+    func rounded(toPlaces places: Int) -> String {
+        String(format: "%.\(places)f", self)
+    }
+}
+
+private extension String {
+    var nilIfBlank: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

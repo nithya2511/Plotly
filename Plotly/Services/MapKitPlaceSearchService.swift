@@ -1,5 +1,6 @@
 import CoreLocation
 import MapKit
+import SwiftUI
 
 @MainActor
 final class MapKitPlaceSearchService: NSObject, PlaceSearchService, MKLocalSearchCompleterDelegate {
@@ -55,6 +56,16 @@ final class MapKitPlaceSearchService: NSObject, PlaceSearchService, MKLocalSearc
         )
     }
 
+    func details(for mapFeature: MapFeature) async throws -> PlaceDetails {
+        let request = MKMapItemRequest(feature: mapFeature)
+        let item = try await request.mapItem
+        return placeDetails(
+            for: item,
+            fallbackName: mapFeature.title ?? "Selected Place",
+            fallbackPlaceID: mapFeaturePlaceID(for: mapFeature)
+        )
+    }
+
     nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
         Task { @MainActor in
             let suggestions = completer.results.map { completion in
@@ -90,6 +101,36 @@ enum PlaceSearchError: LocalizedError {
         case .noDetails:
             return "No location details were found for that place."
         }
+    }
+}
+
+private extension MapKitPlaceSearchService {
+    func placeDetails(
+        for item: MKMapItem,
+        fallbackName: String,
+        fallbackPlaceID: String
+    ) -> PlaceDetails {
+        let placemark = item.placemark
+        return PlaceDetails(
+            placeID: item.identifier?.rawValue ?? fallbackPlaceID,
+            name: item.name ?? fallbackName,
+            formattedAddress: [placemark.title, placemark.locality, placemark.country]
+                .compactMap { $0 }
+                .removingDuplicates()
+                .joined(separator: ", "),
+            latitude: placemark.coordinate.latitude,
+            longitude: placemark.coordinate.longitude
+        )
+    }
+
+    func mapFeaturePlaceID(for mapFeature: MapFeature) -> String {
+        [
+            "map-feature",
+            mapFeature.title ?? "untitled",
+            "\(mapFeature.coordinate.latitude)",
+            "\(mapFeature.coordinate.longitude)"
+        ]
+        .joined(separator: ":")
     }
 }
 

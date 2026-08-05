@@ -1,6 +1,11 @@
 import SwiftData
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
+
+extension Notification.Name {
+    static let plotlyDismissKeyboard = Notification.Name("plotlyDismissKeyboard")
+}
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
@@ -106,6 +111,7 @@ struct HomeMapScreen: View {
     @State private var isMainMenuPresented = false
     @State private var isRoutePlannerPresented = false
     @State private var isRouteEditorPresented = false
+    @State private var keyboardHeight: CGFloat = 0
 
     init(
         viewModel: HomeMapViewModel,
@@ -122,7 +128,17 @@ struct HomeMapScreen: View {
             PlannerMapView(
                 stops: viewModel.stops,
                 selectedStopID: $viewModel.selectedStopID,
-                userCoordinate: viewModel.userCoordinate
+                draftMapPinCoordinate: viewModel.draftMapPinCoordinate,
+                userCoordinate: viewModel.userCoordinate,
+                visibleInsets: mapVisibleInsets,
+                onMapTap: { coordinate in
+                    dismissKeyboard()
+                    viewModel.stageMapPin(at: coordinate)
+                },
+                onMapFeatureSelection: { mapFeature in
+                    dismissKeyboard()
+                    viewModel.stageMapFeature(mapFeature)
+                }
             )
             .ignoresSafeArea()
 
@@ -130,6 +146,7 @@ struct HomeMapScreen: View {
                 SearchPanel(
                     viewModel: viewModel,
                     onOpenMenu: {
+                        dismissKeyboard()
                         viewModel.refreshBookmarkedPlans()
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
                             isMainMenuPresented = true
@@ -148,19 +165,48 @@ struct HomeMapScreen: View {
             .padding(.horizontal, 14)
             .padding(.top, 10)
 
+            if viewModel.draftMapPinCoordinate != nil {
+                VStack {
+                    HStack {
+                        Spacer()
+                        DraftMapPinConfirmationControl(
+                            onCancel: {
+                                dismissKeyboard()
+                                viewModel.cancelDraftMapPin()
+                            },
+                            onConfirm: {
+                                dismissKeyboard()
+                                viewModel.confirmDraftMapPin()
+                                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                                    sheetDetent = .expanded
+                                }
+                            }
+                        )
+                    }
+                    Spacer()
+                }
+                .padding(.top, 74)
+                .padding(.trailing, 14)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             VStack {
                 Spacer()
                 PlanSheet(
                     viewModel: viewModel,
                     detent: $sheetDetent,
+                    isKeyboardVisible: keyboardHeight > 0,
                     onEditRoute: {
+                        dismissKeyboard()
                         isRouteEditorPresented = true
                     },
                     onPlanRoute: {
+                        dismissKeyboard()
                         isRoutePlannerPresented = true
                     }
                 )
             }
+            .offset(y: -keyboardSheetLift)
             .ignoresSafeArea(edges: .bottom)
 
             if isMainMenuPresented {
@@ -184,6 +230,7 @@ struct HomeMapScreen: View {
                 .zIndex(3)
             }
         }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .animation(.spring(response: 0.34, dampingFraction: 0.88), value: isMainMenuPresented)
         .task {
             viewModel.load()
@@ -204,6 +251,12 @@ struct HomeMapScreen: View {
             guard phase == .active else { return }
             viewModel.completeActiveNavigationStopOnReturn()
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            updateKeyboardHeight(from: notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notification in
+            updateKeyboardHeight(from: notification)
+        }
         .sheet(item: $viewModel.noteEditorStop) { stop in
             NoteEditorSheet(stop: stop, note: $viewModel.noteDraft) {
                 viewModel.saveNote()
@@ -216,11 +269,104 @@ struct HomeMapScreen: View {
             RouteEditorSheet(viewModel: viewModel)
         }
     }
+
+    private var mapVisibleInsets: MapVisibleInsets {
+        MapVisibleInsets(
+            top: 104,
+            bottom: visibleSheetHeight + keyboardSheetLift
+        )
+    }
+
+    private var keyboardSheetLift: CGFloat {
+        keyboardHeight
+    }
+
+    private var visibleSheetHeight: CGFloat {
+        sheetDetent.sheetHeight(
+            hasStops: !viewModel.stops.isEmpty,
+            isKeyboardVisible: keyboardHeight > 0
+        )
+    }
+
+    private func dismissKeyboard() {
+        NotificationCenter.default.post(name: .plotlyDismissKeyboard, object: nil)
+    }
+
+    private func updateKeyboardHeight(from notification: Notification) {
+        guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
+            return
+        }
+
+        let height = notification.name == UIResponder.keyboardWillHideNotification ? 0 : frame.height
+        let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+
+        withAnimation(.easeOut(duration: duration)) {
+            keyboardHeight = height
+        }
+    }
 }
 
 private enum PlanSheetDetent {
     case collapsed
     case expanded
+
+    func sheetHeight(hasStops: Bool, isKeyboardVisible: Bool = false) -> CGFloat {
+        if isKeyboardVisible {
+            switch (self, hasStops) {
+            case (.collapsed, false):
+                return 160
+            case (.collapsed, true):
+                return 176
+            case (.expanded, false):
+                return 210
+            case (.expanded, true):
+                return 292
+            }
+        }
+
+        switch (self, hasStops) {
+        case (.collapsed, false):
+            return 190
+        case (.collapsed, true):
+            return 196
+        case (.expanded, false):
+            return 260
+        case (.expanded, true):
+            return 460
+        }
+    }
+}
+
+private struct DraftMapPinConfirmationControl: View {
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: onCancel) {
+                Image(systemName: "xmark")
+                    .font(.headline.weight(.semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .background(.regularMaterial, in: Circle())
+            .accessibilityLabel("Cancel selected map location")
+
+            Button(action: onConfirm) {
+                Image(systemName: "checkmark")
+                    .font(.headline.weight(.bold))
+                    .frame(width: 48, height: 48)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
+            .background(Color(.systemBlue), in: Circle())
+            .shadow(color: Color(.systemBlue).opacity(0.28), radius: 12, y: 4)
+            .accessibilityLabel("Add selected map location to route")
+        }
+    }
 }
 
 private struct MainMenuDrawer: View {
@@ -350,6 +496,7 @@ private struct MainMenuDrawer: View {
 private struct SearchPanel: View {
     @ObservedObject var viewModel: HomeMapViewModel
     let onOpenMenu: () -> Void
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -378,6 +525,7 @@ private struct SearchPanel: View {
                         .textInputAutocapitalization(.words)
                         .disableAutocorrection(true)
                         .submitLabel(.search)
+                        .focused($isSearchFocused)
                         .accessibilityIdentifier("place-search-field")
 
                     if viewModel.isSearching || viewModel.isAddingStop {
@@ -385,6 +533,7 @@ private struct SearchPanel: View {
                             .controlSize(.small)
                     } else if viewModel.hasSearchText {
                         Button {
+                            dismissSearchKeyboard()
                             viewModel.clearSearch()
                         } label: {
                             Image(systemName: "xmark.circle.fill")
@@ -403,6 +552,7 @@ private struct SearchPanel: View {
                     VStack(spacing: 0) {
                         ForEach(viewModel.suggestions.prefix(6)) { suggestion in
                             Button {
+                                dismissSearchKeyboard()
                                 viewModel.addStop(from: suggestion)
                             } label: {
                                 HStack(spacing: 12) {
@@ -443,12 +593,20 @@ private struct SearchPanel: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .plotlyDismissKeyboard)) { _ in
+            dismissSearchKeyboard()
+        }
+    }
+
+    private func dismissSearchKeyboard() {
+        isSearchFocused = false
     }
 }
 
 private struct PlanSheet: View {
     @ObservedObject var viewModel: HomeMapViewModel
     @Binding var detent: PlanSheetDetent
+    let isKeyboardVisible: Bool
     let onEditRoute: () -> Void
     let onPlanRoute: () -> Void
     @GestureState private var dragOffset: CGFloat = 0
@@ -462,11 +620,17 @@ private struct PlanSheet: View {
     }
 
     private var collapsedContentHeight: CGFloat {
-        viewModel.stops.isEmpty ? 190 : 196
+        PlanSheetDetent.collapsed.sheetHeight(
+            hasStops: !viewModel.stops.isEmpty,
+            isKeyboardVisible: isKeyboardVisible
+        )
     }
 
     private var expandedContentHeight: CGFloat {
-        viewModel.stops.isEmpty ? 260 : 460
+        PlanSheetDetent.expanded.sheetHeight(
+            hasStops: !viewModel.stops.isEmpty,
+            isKeyboardVisible: isKeyboardVisible
+        )
     }
 
     private var activeHeight: CGFloat {

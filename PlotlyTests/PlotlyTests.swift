@@ -1,4 +1,6 @@
 import CoreLocation
+import MapKit
+import SwiftUI
 import SwiftData
 import XCTest
 @testable import Plotly
@@ -371,6 +373,93 @@ final class PlotlyTests: XCTestCase {
         XCTAssertEqual(viewModel.stops.first?.placeID, suggestion.placeID)
         XCTAssertEqual(viewModel.searchText, "")
         XCTAssertNotNil(viewModel.selectedStopID)
+    }
+
+    func testViewModelAddsConfirmedMapPinAsRouteStop() throws {
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                )
+            ),
+            locationService: MockLocationService()
+        )
+        let coordinate = CLLocationCoordinate2D(latitude: 52.520008, longitude: 13.404954)
+
+        viewModel.load()
+        viewModel.stageMapPin(at: coordinate)
+
+        XCTAssertNotNil(viewModel.draftMapPinCoordinate)
+
+        viewModel.confirmDraftMapPin()
+
+        XCTAssertNil(viewModel.draftMapPinCoordinate)
+        XCTAssertEqual(viewModel.stops.count, 1)
+        XCTAssertEqual(viewModel.stops.first?.name, "Dropped Pin")
+        XCTAssertEqual(viewModel.stops.first?.formattedAddress, "52.52001, 13.40495")
+        XCTAssertNotNil(viewModel.selectedStopID)
+    }
+
+    func testViewModelCancelsDraftMapPin() throws {
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                )
+            ),
+            locationService: MockLocationService()
+        )
+
+        viewModel.stageMapPin(at: CLLocationCoordinate2D(latitude: 52, longitude: 13))
+        viewModel.cancelDraftMapPin()
+
+        XCTAssertNil(viewModel.draftMapPinCoordinate)
+        XCTAssertTrue(viewModel.stops.isEmpty)
+    }
+
+    func testViewModelAddsNamedMapPlaceToRouteStop() throws {
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                )
+            ),
+            locationService: MockLocationService()
+        )
+        let details = PlaceDetails(
+            placeID: "map-feature:brandenburg-gate",
+            name: "Brandenburg Gate",
+            formattedAddress: "Pariser Platz, Berlin",
+            latitude: 52.516275,
+            longitude: 13.377704
+        )
+
+        viewModel.load()
+        viewModel.stageMapPlace(details)
+        viewModel.confirmDraftMapPin()
+
+        XCTAssertNil(viewModel.draftMapPinCoordinate)
+        XCTAssertEqual(viewModel.stops.count, 1)
+        XCTAssertEqual(viewModel.stops.first?.name, "Brandenburg Gate")
+        XCTAssertEqual(viewModel.stops.first?.formattedAddress, "Pariser Platz, Berlin")
     }
 
     func testViewModelShowsFriendlyMessageWhenPlaceSearchFails() async throws {
@@ -1028,6 +1117,13 @@ private final class MockPlaceSearchService: PlaceSearchService {
     }
 
     func details(for suggestion: PlaceSuggestion) async throws -> PlaceDetails {
+        if let detailsError {
+            throw detailsError
+        }
+        return stubDetails
+    }
+
+    func details(for mapFeature: MapFeature) async throws -> PlaceDetails {
         if let detailsError {
             throw detailsError
         }
