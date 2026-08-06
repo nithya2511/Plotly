@@ -112,6 +112,7 @@ struct HomeMapScreen: View {
     @State private var isRoutePlannerPresented = false
     @State private var isRouteEditorPresented = false
     @State private var keyboardHeight: CGFloat = 0
+    @State private var routeOverviewRequest: UUID?
 
     init(
         viewModel: HomeMapViewModel,
@@ -131,6 +132,8 @@ struct HomeMapScreen: View {
                 draftMapPinCoordinate: viewModel.draftMapPinCoordinate,
                 userCoordinate: viewModel.userCoordinate,
                 visibleInsets: mapVisibleInsets,
+                mapFocusRequest: viewModel.mapFocusRequest,
+                routeOverviewRequest: routeOverviewRequest,
                 onMapTap: { coordinate in
                     dismissKeyboard()
                     viewModel.stageMapPin(at: coordinate)
@@ -148,6 +151,7 @@ struct HomeMapScreen: View {
                     onOpenMenu: {
                         dismissKeyboard()
                         viewModel.refreshBookmarkedPlans()
+                        viewModel.refreshRecentPlans()
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
                             isMainMenuPresented = true
                         }
@@ -188,6 +192,23 @@ struct HomeMapScreen: View {
                 .padding(.top, 74)
                 .padding(.trailing, 14)
                 .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            if viewModel.stops.count > 1, viewModel.draftMapPinCoordinate == nil {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        RouteOverviewMapButton {
+                            dismissKeyboard()
+                            viewModel.selectedStopID = nil
+                            routeOverviewRequest = UUID()
+                        }
+                    }
+                }
+                .padding(.trailing, 14)
+                .padding(.bottom, visibleSheetHeight + keyboardSheetLift + 14)
+                .transition(.scale.combined(with: .opacity))
             }
 
             VStack {
@@ -337,6 +358,28 @@ private enum PlanSheetDetent {
     }
 }
 
+private struct RouteOverviewMapButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 46, height: 46)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .background(.regularMaterial, in: Circle())
+        .overlay {
+            Circle()
+                .strokeBorder(.white.opacity(0.28), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
+        .accessibilityLabel("Show full route")
+    }
+}
+
 private struct DraftMapPinConfirmationControl: View {
     let onCancel: () -> Void
     let onConfirm: () -> Void
@@ -370,10 +413,16 @@ private struct DraftMapPinConfirmationControl: View {
 }
 
 private struct MainMenuDrawer: View {
+    @AppStorage("appAppearanceMode") private var appAppearanceModeRawValue = AppAppearanceMode.system.rawValue
     @ObservedObject var viewModel: HomeMapViewModel
     let account: UserAccountSnapshot
     let onSignOut: () -> Void
     @Binding var isPresented: Bool
+    @State private var isNewRouteConfirmationPresented = false
+
+    private var appAppearanceMode: AppAppearanceMode {
+        AppAppearanceMode.normalized(appAppearanceModeRawValue)
+    }
 
     private func close() {
         withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
@@ -387,24 +436,70 @@ private struct MainMenuDrawer: View {
                 List {
                     Section {
                         Button {
-                            viewModel.createNewRoute()
-                            close()
+                            if viewModel.stops.isEmpty {
+                                viewModel.createNewRoute()
+                                close()
+                            } else {
+                                isNewRouteConfirmationPresented = true
+                            }
                         } label: {
                             Label("New route", systemImage: "plus.circle.fill")
+                        }
+                    }
+
+                    Section("Recent routes") {
+                        if viewModel.recentPlans.isEmpty {
+                            ContentUnavailableView(
+                                "No Recent Routes",
+                                systemImage: "clock",
+                                description: Text("Routes you create will appear here.")
+                            )
+                        } else {
+                            ForEach(viewModel.recentPlans) { plan in
+                                Button {
+                                    viewModel.selectRecentPlan(plan)
+                                    close()
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Image(systemName: plan.isFavorite ? "bookmark.fill" : "clock")
+                                            .foregroundStyle(plan.isFavorite ? Color(.systemBlue) : .secondary)
+                                            .frame(width: 26)
+
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(plan.title)
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(1)
+                                            Text("\(plan.stops.count) \(plan.stops.count == 1 ? "stop" : "stops")")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+
+                                        Spacer()
+
+                                        if plan.id == viewModel.currentPlanID {
+                                            Text("Current")
+                                                .font(.caption2.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
 
                     Section("Bookmarked routes") {
                         if viewModel.bookmarkedPlans.isEmpty {
                             ContentUnavailableView(
-                                "No Bookmarks",
+                                "No Bookmarked Routes",
                                 systemImage: "bookmark",
                                 description: Text("Bookmarked routes will appear here.")
                             )
                         } else {
                             ForEach(viewModel.bookmarkedPlans) { plan in
                                 Button {
-                                    viewModel.selectBookmarkedPlan(plan)
+                                    viewModel.selectRecentPlan(plan)
                                     close()
                                 } label: {
                                     HStack(spacing: 12) {
@@ -452,8 +547,15 @@ private struct MainMenuDrawer: View {
                             }
                         }
 
-                        Label("Settings", systemImage: "gearshape")
-                        Label("Appearance", systemImage: "circle.lefthalf.filled")
+                        Picker(selection: $appAppearanceModeRawValue) {
+                            ForEach(AppAppearanceMode.allCases) { mode in
+                                Label(mode.title, systemImage: mode.iconName)
+                                    .tag(mode.rawValue)
+                            }
+                        } label: {
+                            Label("Appearance", systemImage: appAppearanceMode.iconName)
+                        }
+                        .pickerStyle(.menu)
 
                         Button(role: account.isGuest ? nil : .destructive) {
                             close()
@@ -489,6 +591,25 @@ private struct MainMenuDrawer: View {
             )
             .shadow(color: .black.opacity(0.22), radius: 18, x: 6, y: 0)
             .ignoresSafeArea(edges: .vertical)
+            .confirmationDialog(
+                "Start a new route?",
+                isPresented: $isNewRouteConfirmationPresented,
+                titleVisibility: .visible
+            ) {
+                Button("Save current and start new") {
+                    viewModel.createNewRoute()
+                    close()
+                }
+
+                Button("Discard current route", role: .destructive) {
+                    viewModel.discardCurrentRouteAndCreateNew()
+                    close()
+                }
+
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Your current route can stay in Recent routes, or you can discard it before starting fresh.")
+            }
         }
     }
 }
@@ -641,11 +762,32 @@ private struct PlanSheet: View {
         max(collapsedContentHeight, activeHeight + dragOffset)
     }
 
+    private var showsOptimizeButton: Bool {
+        !viewModel.stops.isEmpty
+    }
+
     var body: some View {
         VStack(spacing: 14) {
             dragHandle
             sheetHeader
-            sheetContent
+            if showsOptimizeButton {
+                VStack(spacing: 14) {
+                    sheetContent
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .clipped()
+
+                    OptimizeRouteButton(
+                        isEnabled: viewModel.stops.count >= 2,
+                        action: onPlanRoute
+                    )
+                    .padding(.horizontal, 16)
+                }
+                .padding(.bottom, 18)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            } else {
+                sheetContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
         }
         .frame(height: displayedHeight, alignment: .top)
         .clipped()
@@ -665,6 +807,18 @@ private struct PlanSheet: View {
         .onChange(of: isRouteTitleFocused) { _, isFocused in
             if !isFocused, isEditingRouteTitle {
                 saveRouteTitle()
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let deletedStopUndo = viewModel.deletedStopUndo {
+                DeleteUndoToast(
+                    stopName: deletedStopUndo.stop.name,
+                    onUndo: viewModel.undoDeleteStop,
+                    onDismiss: viewModel.clearDeleteUndo
+                )
+                .padding(.horizontal, 16)
+                .padding(.bottom, showsOptimizeButton ? 82 : 18)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
     }
@@ -752,24 +906,13 @@ private struct PlanSheet: View {
             Spacer()
 
             Button {
-                onPlanRoute()
-            } label: {
-                Image(systemName: "wand.and.sparkles")
-                    .font(.headline)
-            }
-            .buttonStyle(.bordered)
-            .disabled(viewModel.stops.count < 2)
-            .accessibilityLabel("Optimize route")
-
-            Button {
                 viewModel.toggleRouteFavorite()
             } label: {
                 Image(systemName: viewModel.isPlanFavorite ? "bookmark.fill" : "bookmark")
                     .font(.headline)
             }
             .buttonStyle(.bordered)
-            .tint(viewModel.isPlanFavorite ? .blue : .secondary)
-            .disabled(viewModel.stops.isEmpty)
+            .tint(viewModel.isPlanFavorite ? .blue : .primary)
             .accessibilityLabel(viewModel.isPlanFavorite ? "Remove route bookmark" : "Bookmark route")
         }
         .padding(.horizontal, 16)
@@ -826,7 +969,7 @@ private struct PlanSheet: View {
                                     onEditNote: { viewModel.startEditingNote(for: stop) },
                                     onMarkCompleted: { viewModel.markStopCompleted(stop) },
                                     onMarkIncomplete: { viewModel.markStopIncomplete(stop) },
-                                    onDelete: { viewModel.remove(stop) }
+                                    onDelete: { viewModel.deleteStop(stop) }
                                 )
                                 .onDrag {
                                     draggedStopID = stop.id
@@ -847,7 +990,7 @@ private struct PlanSheet: View {
                         .background(Color(.secondarySystemBackground).opacity(0.62), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, 12)
                 }
                 .frame(maxWidth: .infinity, minHeight: 300, alignment: .top)
             }
@@ -954,12 +1097,92 @@ private struct RoutePlanStatusBadge: View {
     let mode: RoutePlanningMode
 
     var body: some View {
-        Label(mode == .shortest ? "Optimized" : mode.title, systemImage: "sparkles")
+        Label("Optimized by \(mode.title)", systemImage: "sparkles")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(Color(.systemBlue))
             .padding(.horizontal, 8)
             .frame(minHeight: 20)
             .background(Color(.systemBlue).opacity(0.1), in: Capsule())
+    }
+}
+
+private struct OptimizeRouteButton: View {
+    let isEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
+                    .font(.subheadline.weight(.semibold))
+
+                Text("Optimize route")
+                    .font(.subheadline.weight(.semibold))
+
+                Spacer()
+
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(isEnabled ? .primary : .secondary)
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(Color(.secondarySystemBackground).opacity(isEnabled ? 0.62 : 0.42))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(.white.opacity(0.16), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel("Optimize route")
+    }
+}
+
+private struct DeleteUndoToast: View {
+    let stopName: String
+    let onUndo: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "trash")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text("\(stopName) deleted")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Button("Undo", action: onUndo)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(Color(.systemBlue))
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss undo")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
+        .frame(maxWidth: .infinity, minHeight: 48)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(.white.opacity(0.22), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -1150,6 +1373,11 @@ private enum RouteStopRole {
     }
 }
 
+private enum StopRowSwipeAction {
+    case edit
+    case delete
+}
+
 private struct StopRow: View {
     let stop: PlanStopSnapshot
     let role: RouteStopRole
@@ -1166,8 +1394,46 @@ private struct StopRow: View {
     let onMarkCompleted: () -> Void
     let onMarkIncomplete: () -> Void
     let onDelete: () -> Void
+    @GestureState private var swipeTranslation: CGFloat = 0
+    @State private var swipeOffset: CGFloat = 0
+    @State private var rowWidth: CGFloat = 0
+    @State private var committedSwipeAction: StopRowSwipeAction?
+
+    private let swipeActionWidth: CGFloat = 86
+    private let swipeRevealThreshold: CGFloat = 0.42
+    private let swipeCommitThreshold: CGFloat = 1.12
 
     var body: some View {
+        ZStack {
+            activeSwipeColor
+
+            HStack(spacing: 0) {
+                editAction
+                Spacer(minLength: 0)
+                deleteAction
+            }
+
+            rowContent
+                .offset(x: effectiveSwipeOffset)
+                .gesture(swipeGesture)
+        }
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear {
+                        rowWidth = proxy.size.width
+                    }
+                    .onChange(of: proxy.size.width) { _, width in
+                        rowWidth = width
+                    }
+            }
+        }
+        .clipped()
+        .accessibilityIdentifier("plan-stop-row")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private var rowContent: some View {
         HStack(alignment: .top, spacing: 12) {
             RouteStopIndicator(
                 role: role,
@@ -1227,8 +1493,7 @@ private struct StopRow: View {
                     }
 
                     Section {
-                        Button("Edit note", systemImage: "note.text", action: onEditNote)
-                        Button("Remove", systemImage: "trash", role: .destructive, action: onDelete)
+                        Button("Edit stop", systemImage: "pencil", action: onEditNote)
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -1242,6 +1507,7 @@ private struct StopRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .background(Color(.secondarySystemBackground))
         .overlay(alignment: .leading) {
             if isSelected || isActiveNavigationStop {
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
@@ -1257,9 +1523,139 @@ private struct StopRow: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
-        .accessibilityIdentifier("plan-stop-row")
-        .accessibilityAddTraits(.isButton)
+        .onTapGesture {
+            if swipeOffset == 0 {
+                onSelect()
+            } else {
+                closeSwipe()
+            }
+        }
+    }
+
+    private var editAction: some View {
+        Button(action: editFromSwipe) {
+            VStack(spacing: 4) {
+                Image(systemName: "pencil")
+                    .font(.subheadline.weight(.bold))
+                Text("Edit")
+                    .font(.caption2.weight(.bold))
+            }
+            .foregroundStyle(.white)
+            .frame(width: swipeActionWidth)
+            .frame(maxHeight: .infinity)
+            .background(Color(.systemBlue))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Edit \(stop.name)")
+    }
+
+    private var deleteAction: some View {
+        Button(action: deleteFromSwipe) {
+            VStack(spacing: 4) {
+                Image(systemName: "trash.fill")
+                    .font(.subheadline.weight(.bold))
+                Text("Delete")
+                    .font(.caption2.weight(.bold))
+            }
+            .foregroundStyle(.white)
+            .frame(width: swipeActionWidth)
+            .frame(maxHeight: .infinity)
+            .background(Color(.systemRed))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Delete \(stop.name)")
+    }
+
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 16)
+            .updating($swipeTranslation) { value, state, _ in
+                guard committedSwipeAction == nil else { return }
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                state = value.translation.width
+            }
+            .onEnded { value in
+                guard committedSwipeAction == nil else { return }
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                let proposedOffset = swipeOffset + value.translation.width
+                let predictedOffset = swipeOffset + value.predictedEndTranslation.width
+
+                if predictedOffset > swipeActionWidth * swipeCommitThreshold {
+                    commitSwipe(.edit)
+                    return
+                }
+
+                if predictedOffset < -swipeActionWidth * swipeCommitThreshold {
+                    commitSwipe(.delete)
+                    return
+                }
+
+                withAnimation(.spring(response: 0.24, dampingFraction: 0.88)) {
+                    if proposedOffset > swipeActionWidth * swipeRevealThreshold {
+                        swipeOffset = swipeActionWidth
+                    } else if proposedOffset < -swipeActionWidth * swipeRevealThreshold {
+                        swipeOffset = -swipeActionWidth
+                    } else {
+                        swipeOffset = 0
+                    }
+                }
+            }
+    }
+
+    private var effectiveSwipeOffset: CGFloat {
+        if committedSwipeAction != nil {
+            return swipeOffset
+        }
+
+        return min(swipeActionWidth, max(-swipeActionWidth, swipeOffset + swipeTranslation))
+    }
+
+    private var activeSwipeColor: Color {
+        if effectiveSwipeOffset > 0 {
+            return Color(.systemBlue)
+        }
+
+        if effectiveSwipeOffset < 0 {
+            return Color(.systemRed)
+        }
+
+        return .clear
+    }
+
+    private func closeSwipe() {
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.88)) {
+            swipeOffset = 0
+        }
+    }
+
+    private func deleteFromSwipe() {
+        closeSwipe()
+        onDelete()
+    }
+
+    private func editFromSwipe() {
+        closeSwipe()
+        onEditNote()
+    }
+
+    private func commitSwipe(_ action: StopRowSwipeAction) {
+        committedSwipeAction = action
+        let direction: CGFloat = action == .edit ? 1 : -1
+        let offscreenOffset = direction * max(rowWidth, swipeActionWidth * 4)
+
+        withAnimation(.easeInOut(duration: 0.22)) {
+            swipeOffset = offscreenOffset
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+            switch action {
+            case .edit:
+                onEditNote()
+                committedSwipeAction = nil
+                swipeOffset = 0
+            case .delete:
+                onDelete()
+            }
+        }
     }
 
     private var roleText: String {

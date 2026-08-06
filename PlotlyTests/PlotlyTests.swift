@@ -109,6 +109,50 @@ final class PlotlyTests: XCTestCase {
         XCTAssertTrue(afterRemoval.stops.isEmpty)
     }
 
+    func testSwiftDataRepositoryRestoresRemovedStopInOriginalPosition() throws {
+        let store = try makeStore()
+        let repository = store.repository
+
+        _ = try repository.addStop(
+            PlaceDetails(
+                placeID: "first-restore-stop",
+                name: "First",
+                formattedAddress: "First Address",
+                latitude: 52.1,
+                longitude: 13.1
+            )
+        )
+        let secondPlan = try repository.addStop(
+            PlaceDetails(
+                placeID: "second-restore-stop",
+                name: "Second",
+                formattedAddress: "Second Address",
+                latitude: 52.2,
+                longitude: 13.2
+            )
+        )
+        _ = try repository.addStop(
+            PlaceDetails(
+                placeID: "third-restore-stop",
+                name: "Third",
+                formattedAddress: "Third Address",
+                latitude: 52.3,
+                longitude: 13.3
+            )
+        )
+        let removedStop = try XCTUnwrap(secondPlan.stops.first(where: { $0.placeID == "second-restore-stop" }))
+
+        let afterRemoval = try repository.removeStop(id: removedStop.id)
+        XCTAssertEqual(afterRemoval.stops.map(\.placeID), ["first-restore-stop", "third-restore-stop"])
+
+        let restored = try repository.restoreStop(removedStop)
+        XCTAssertEqual(
+            restored.stops.map(\.placeID),
+            ["first-restore-stop", "second-restore-stop", "third-restore-stop"]
+        )
+        XCTAssertEqual(restored.stops.map(\.sortIndex), [0, 1, 2])
+    }
+
     func testSwiftDataRepositoryUpdatesRouteDetails() throws {
         let store = try makeStore()
         let repository = store.repository
@@ -462,6 +506,33 @@ final class PlotlyTests: XCTestCase {
         XCTAssertEqual(viewModel.stops.first?.formattedAddress, "Pariser Platz, Berlin")
     }
 
+    func testViewModelRequestsMapFocusForAddedSearchStop() async throws {
+        let suggestion = PlaceSuggestion(
+            placeID: "brandenburg",
+            primaryText: "Brandenburg Gate",
+            secondaryText: "Berlin"
+        )
+        let details = PlaceDetails(
+            placeID: "brandenburg",
+            name: "Brandenburg Gate",
+            formattedAddress: "Pariser Platz, Berlin",
+            latitude: 52.516275,
+            longitude: 13.377704
+        )
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(),
+            searchService: MockPlaceSearchService(suggestions: [suggestion], details: details),
+            locationService: MockLocationService()
+        )
+
+        viewModel.load()
+        viewModel.addStop(from: suggestion)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(viewModel.stops.first?.name, "Brandenburg Gate")
+        XCTAssertEqual(viewModel.mapFocusRequest?.stopID, viewModel.stops.first?.id)
+    }
+
     func testViewModelShowsFriendlyMessageWhenPlaceSearchFails() async throws {
         let viewModel = HomeMapViewModel(
             repository: MockPlanRepository(),
@@ -648,6 +719,60 @@ final class PlotlyTests: XCTestCase {
         XCTAssertEqual(viewModel.planTitle, "Today's Route")
         XCTAssertTrue(viewModel.stops.isEmpty)
         XCTAssertNil(viewModel.selectedStopID)
+    }
+
+    func testViewModelKeepsPreviousRouteInRecentsWhenCreatingNewRoute() throws {
+        let existingStop = makeStop(placeID: "existing", name: "Existing Stop", sortIndex: 0)
+        let repository = MockPlanRepository(stops: [existingStop])
+        let viewModel = HomeMapViewModel(
+            repository: repository,
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                )
+            ),
+            locationService: MockLocationService()
+        )
+
+        viewModel.load()
+        viewModel.saveRouteDetails(title: "House Viewings", isFavorite: false)
+        viewModel.createNewRoute()
+
+        XCTAssertEqual(viewModel.planTitle, "Today's Route")
+        XCTAssertTrue(viewModel.stops.isEmpty)
+        XCTAssertTrue(viewModel.recentPlans.contains { $0.title == "House Viewings" })
+    }
+
+    func testViewModelCanDiscardCurrentRouteWhenCreatingNewRoute() throws {
+        let existingStop = makeStop(placeID: "existing", name: "Existing Stop", sortIndex: 0)
+        let repository = MockPlanRepository(stops: [existingStop])
+        let viewModel = HomeMapViewModel(
+            repository: repository,
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                )
+            ),
+            locationService: MockLocationService()
+        )
+
+        viewModel.load()
+        viewModel.saveRouteDetails(title: "Temporary Route", isFavorite: false)
+        viewModel.discardCurrentRouteAndCreateNew()
+
+        XCTAssertEqual(viewModel.planTitle, "Today's Route")
+        XCTAssertTrue(viewModel.stops.isEmpty)
+        XCTAssertFalse(viewModel.recentPlans.contains { $0.title == "Temporary Route" })
     }
 
     func testViewModelCompletesActiveStopOnReturnAndWaitsForNextGoAction() throws {
@@ -945,6 +1070,23 @@ private final class MockPlanRepository: PlanRepository {
         return bookmarks
     }
 
+    func loadRecentPlans() throws -> [PlanSnapshot] {
+        var recents = savedPlans.filter { !$0.stops.isEmpty || $0.id == plan.id }
+        if !recents.contains(where: { $0.id == plan.id }) {
+            recents.insert(plan, at: 0)
+        }
+        return recents.map { recent in
+            PlanSnapshot(
+                id: recent.id,
+                title: recent.title,
+                isFavorite: recent.isFavorite,
+                stops: recent.stops,
+                isCurrent: recent.id == plan.id,
+                updatedAt: recent.updatedAt
+            )
+        }
+    }
+
     func selectPlan(id: UUID) throws -> PlanSnapshot {
         if plan.id == id {
             return plan
@@ -957,9 +1099,15 @@ private final class MockPlanRepository: PlanRepository {
     }
 
     func createNewPlan() throws -> PlanSnapshot {
-        if plan.isFavorite {
+        if !plan.stops.isEmpty {
             savedPlans.insert(plan, at: 0)
         }
+        plan = PlanSnapshot(id: UUID(), title: "Today's Route", isFavorite: false, stops: [])
+        return plan
+    }
+
+    func discardCurrentPlanAndCreateNew() throws -> PlanSnapshot {
+        savedPlans.removeAll { $0.id == plan.id }
         plan = PlanSnapshot(id: UUID(), title: "Today's Route", isFavorite: false, stops: [])
         return plan
     }
@@ -1037,6 +1185,31 @@ private final class MockPlanRepository: PlanRepository {
             isFavorite: plan.isFavorite,
             stops: plan.stops.filter { $0.id != id }
         )
+        return plan
+    }
+
+    func restoreStop(_ stop: PlanStopSnapshot) throws -> PlanSnapshot {
+        guard !plan.stops.contains(where: { $0.id == stop.id }) else {
+            return plan
+        }
+
+        var restoredStops = plan.stops
+        let insertionIndex = min(max(stop.sortIndex, 0), restoredStops.count)
+        restoredStops.insert(stop, at: insertionIndex)
+        let reindexedStops = restoredStops.enumerated().map { index, stop in
+            PlanStopSnapshot(
+                id: stop.id,
+                placeID: stop.placeID,
+                name: stop.name,
+                formattedAddress: stop.formattedAddress,
+                latitude: stop.latitude,
+                longitude: stop.longitude,
+                note: stop.note,
+                sortIndex: index,
+                isCompleted: stop.isCompleted
+            )
+        }
+        plan = PlanSnapshot(id: plan.id, title: plan.title, isFavorite: plan.isFavorite, stops: reindexedStops)
         return plan
     }
 

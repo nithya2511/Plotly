@@ -8,6 +8,8 @@ struct PlannerMapView: View {
     let draftMapPinCoordinate: CLLocationCoordinate2D?
     let userCoordinate: CLLocationCoordinate2D?
     let visibleInsets: MapVisibleInsets
+    let mapFocusRequest: MapStopFocusRequest?
+    let routeOverviewRequest: UUID?
     let onMapTap: (CLLocationCoordinate2D) -> Void
     let onMapFeatureSelection: (MapFeature) -> Void
 
@@ -31,6 +33,8 @@ struct PlannerMapView: View {
             userCoordinate: userCoordinate,
             visibleInsets: visibleInsets,
             mapSize: size,
+            mapFocusRequest: mapFocusRequest,
+            routeOverviewRequest: routeOverviewRequest,
             onMapTap: onMapTap,
             onMapFeatureSelection: onMapFeatureSelection
         )
@@ -49,6 +53,8 @@ private struct MapKitPlannerMapView: View {
     let userCoordinate: CLLocationCoordinate2D?
     let visibleInsets: MapVisibleInsets
     let mapSize: CGSize
+    let mapFocusRequest: MapStopFocusRequest?
+    let routeOverviewRequest: UUID?
     let onMapTap: (CLLocationCoordinate2D) -> Void
     let onMapFeatureSelection: (MapFeature) -> Void
     @State private var cameraPosition: MapCameraPosition = .automatic
@@ -186,14 +192,27 @@ private struct MapKitPlannerMapView: View {
         .onChange(of: stops.map(\.id)) { _, _ in
             focusMap()
         }
-        .onChange(of: selectedStopID) { _, _ in
-            guard draftMapPinCoordinate != nil || stops.count <= 1 else { return }
-            focusMap()
+        .onChange(of: selectedStopID) { _, stopID in
+            if draftMapPinCoordinate != nil {
+                focusMap()
+            } else if let stopID {
+                focusMap(on: stopID)
+            } else {
+                focusMap()
+            }
         }
         .onChange(of: draftMapPinFocusKey) { _, _ in
             focusMap()
         }
         .onChange(of: visibleInsets) { _, _ in
+            focusMap()
+        }
+        .onChange(of: mapFocusRequest) { _, request in
+            guard let request else { return }
+            focusMap(on: request.stopID)
+        }
+        .onChange(of: routeOverviewRequest) { _, request in
+            guard request != nil else { return }
             focusMap()
         }
         .onChange(of: selectedMapFeature) { _, feature in
@@ -212,6 +231,22 @@ private struct MapKitPlannerMapView: View {
     private func focusMap() {
         withAnimation(.easeInOut(duration: 0.28)) {
             cameraPosition = focusedCameraPosition
+        }
+    }
+
+    private func focusMap(on stopID: UUID) {
+        guard let stop = stops.first(where: { $0.id == stopID }) else {
+            focusMap()
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.28)) {
+            cameraPosition = .region(
+                visibleCenterRegion(
+                    center: stop.coordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
+                )
+            )
         }
     }
 

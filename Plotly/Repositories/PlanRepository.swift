@@ -5,13 +5,16 @@ import SwiftData
 protocol PlanRepository {
     func loadCurrentPlan() throws -> PlanSnapshot
     func loadBookmarkedPlans() throws -> [PlanSnapshot]
+    func loadRecentPlans() throws -> [PlanSnapshot]
     func selectPlan(id: UUID) throws -> PlanSnapshot
     func createNewPlan() throws -> PlanSnapshot
+    func discardCurrentPlanAndCreateNew() throws -> PlanSnapshot
     func addStop(_ place: PlaceDetails) throws -> PlanSnapshot
     func updatePlanDetails(title: String, isFavorite: Bool) throws -> PlanSnapshot
     func updateStopNote(id: UUID, note: String) throws -> PlanSnapshot
     func updateStopCompletion(id: UUID, isCompleted: Bool) throws -> PlanSnapshot
     func removeStop(id: UUID) throws -> PlanSnapshot
+    func restoreStop(_ stop: PlanStopSnapshot) throws -> PlanSnapshot
     func moveStops(from source: IndexSet, to destination: Int) throws -> PlanSnapshot
     func reorderStops(_ orderedStopIDs: [UUID]) throws -> PlanSnapshot
 }
@@ -39,6 +42,37 @@ final class SwiftDataPlanRepository: PlanRepository {
             sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
         )
         return try modelContext.fetch(descriptor).map { try snapshot(for: $0) }
+    }
+
+    func loadRecentPlans() throws -> [PlanSnapshot] {
+        let userID = userID
+        let descriptor = FetchDescriptor<Plan>(
+            predicate: #Predicate { $0.userID == userID },
+            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
+        )
+        let plans = try modelContext.fetch(descriptor)
+        var recentPlans: [PlanSnapshot] = []
+        for plan in plans {
+            let stops = try stops(for: plan.id)
+            if plan.isCurrent || !stops.isEmpty {
+                recentPlans.append(
+                    PlanSnapshot(
+                        id: plan.id,
+                        title: plan.title,
+                        isFavorite: plan.isFavorite,
+                        stops: stops.map(\.snapshot),
+                        isCurrent: plan.isCurrent,
+                        updatedAt: plan.updatedAt
+                    )
+                )
+            }
+        }
+        return recentPlans.sorted { lhs, rhs in
+            if lhs.isCurrent != rhs.isCurrent {
+                return lhs.isCurrent
+            }
+            return lhs.updatedAt > rhs.updatedAt
+        }
     }
 
     func selectPlan(id: UUID) throws -> PlanSnapshot {
@@ -76,6 +110,16 @@ final class SwiftDataPlanRepository: PlanRepository {
         modelContext.insert(newPlan)
         try modelContext.save()
         return try snapshot(for: newPlan)
+    }
+
+    func discardCurrentPlanAndCreateNew() throws -> PlanSnapshot {
+        let plan = try currentPlan()
+        for stop in try stops(for: plan.id) {
+            modelContext.delete(stop)
+        }
+        modelContext.delete(plan)
+        try modelContext.save()
+        return try createNewPlan()
     }
 
     func addStop(_ place: PlaceDetails) throws -> PlanSnapshot {
@@ -151,6 +195,33 @@ final class SwiftDataPlanRepository: PlanRepository {
         plan.updatedAt = Date()
         try modelContext.save()
         return try snapshot(for: plan)
+    }
+
+    func restoreStop(_ stop: PlanStopSnapshot) throws -> PlanSnapshot {
+        let plan = try currentPlan()
+        var orderedStops = try stops(for: plan.id)
+
+        if orderedStops.contains(where: { $0.id == stop.id }) {
+            return try snapshot(for: plan)
+        }
+
+        let restoredStop = PlanStop(
+            id: stop.id,
+            planID: plan.id,
+            placeID: stop.placeID,
+            name: stop.name,
+            formattedAddress: stop.formattedAddress,
+            latitude: stop.latitude,
+            longitude: stop.longitude,
+            note: stop.note,
+            sortIndex: stop.sortIndex,
+            isCompleted: stop.isCompleted
+        )
+        modelContext.insert(restoredStop)
+
+        let insertionIndex = min(max(stop.sortIndex, 0), orderedStops.count)
+        orderedStops.insert(restoredStop, at: insertionIndex)
+        return try saveOrder(orderedStops, in: plan)
     }
 
     func moveStops(from source: IndexSet, to destination: Int) throws -> PlanSnapshot {
@@ -267,7 +338,9 @@ final class SwiftDataPlanRepository: PlanRepository {
             id: plan.id,
             title: plan.title,
             isFavorite: plan.isFavorite,
-            stops: try stops(for: plan.id).map(\.snapshot)
+            stops: try stops(for: plan.id).map(\.snapshot),
+            isCurrent: plan.isCurrent,
+            updatedAt: plan.updatedAt
         )
     }
 }

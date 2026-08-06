@@ -16,6 +16,7 @@ final class HomeMapViewModel: ObservableObject {
     @Published private(set) var suggestions: [PlaceSuggestion] = []
     @Published private(set) var stops: [PlanStopSnapshot] = []
     @Published private(set) var bookmarkedPlans: [PlanSnapshot] = []
+    @Published private(set) var recentPlans: [PlanSnapshot] = []
     @Published private(set) var currentPlanID: UUID?
     @Published private(set) var planTitle = "Today's Route"
     @Published private(set) var isPlanFavorite = false
@@ -28,6 +29,8 @@ final class HomeMapViewModel: ObservableObject {
     @Published private(set) var isNavigatingRoute = false
     @Published private(set) var activeNavigationStopID: UUID?
     @Published private(set) var visitedStopIDs: Set<UUID> = []
+    @Published private(set) var mapFocusRequest: MapStopFocusRequest?
+    @Published private(set) var deletedStopUndo: DeletedStopUndo?
     @Published var draftMapPinCoordinate: CLLocationCoordinate2D?
     @Published private(set) var draftMapPinDetails: PlaceDetails?
     @Published var selectedStopID: UUID?
@@ -50,6 +53,7 @@ final class HomeMapViewModel: ObservableObject {
     private let navigationService: RouteNavigationService
     private var searchTask: Task<Void, Never>?
     private var mapFeatureDetailsTask: Task<Void, Never>?
+    private var deleteUndoTask: Task<Void, Never>?
 
     init(
         repository: PlanRepository,
@@ -66,12 +70,14 @@ final class HomeMapViewModel: ObservableObject {
     deinit {
         searchTask?.cancel()
         mapFeatureDetailsTask?.cancel()
+        deleteUndoTask?.cancel()
     }
 
     func load() {
         do {
             apply(try repository.loadCurrentPlan())
             refreshBookmarkedPlans()
+            refreshRecentPlans()
         } catch {
             errorMessage = UserFacingErrorMessage.loadRoute
         }
@@ -109,6 +115,7 @@ final class HomeMapViewModel: ObservableObject {
                 if let added = plan.stops.first(where: { $0.placeID == details.placeID }) {
                     selectedStopID = added.id
                     recentlyAddedStopID = added.id
+                    mapFocusRequest = MapStopFocusRequest(stopID: added.id)
                 }
                 clearSearch()
             } catch {
@@ -195,6 +202,7 @@ final class HomeMapViewModel: ObservableObject {
             if let added = plan.stops.first(where: { $0.placeID == details.placeID }) {
                 selectedStopID = added.id
                 recentlyAddedStopID = added.id
+                mapFocusRequest = MapStopFocusRequest(stopID: added.id)
             }
         } catch {
             errorMessage = UserFacingErrorMessage.addMapPin
@@ -205,6 +213,7 @@ final class HomeMapViewModel: ObservableObject {
         do {
             apply(try repository.updatePlanDetails(title: title, isFavorite: isFavorite))
             refreshBookmarkedPlans()
+            refreshRecentPlans()
         } catch {
             errorMessage = UserFacingErrorMessage.saveRoute
         }
@@ -215,11 +224,16 @@ final class HomeMapViewModel: ObservableObject {
     }
 
     func selectBookmarkedPlan(_ plan: PlanSnapshot) {
+        selectRecentPlan(plan)
+    }
+
+    func selectRecentPlan(_ plan: PlanSnapshot) {
         do {
             apply(try repository.selectPlan(id: plan.id))
             routePlanningMode = .manual
             resetNavigationProgress()
             refreshBookmarkedPlans()
+            refreshRecentPlans()
         } catch {
             errorMessage = UserFacingErrorMessage.openRoute
         }
@@ -233,6 +247,21 @@ final class HomeMapViewModel: ObservableObject {
             recentlyAddedStopID = nil
             resetNavigationProgress()
             refreshBookmarkedPlans()
+            refreshRecentPlans()
+        } catch {
+            errorMessage = UserFacingErrorMessage.createRoute
+        }
+    }
+
+    func discardCurrentRouteAndCreateNew() {
+        do {
+            apply(try repository.discardCurrentPlanAndCreateNew())
+            routePlanningMode = .manual
+            selectedStopID = nil
+            recentlyAddedStopID = nil
+            resetNavigationProgress()
+            refreshBookmarkedPlans()
+            refreshRecentPlans()
         } catch {
             errorMessage = UserFacingErrorMessage.createRoute
         }
@@ -255,7 +284,8 @@ final class HomeMapViewModel: ObservableObject {
         }
     }
 
-    func remove(_ stop: PlanStopSnapshot) {
+    func deleteStop(_ stop: PlanStopSnapshot) {
+        let undo = DeletedStopUndo(planID: currentPlanID, stop: stop)
         do {
             apply(try repository.removeStop(id: stop.id))
             routePlanningMode = .manual
@@ -266,9 +296,42 @@ final class HomeMapViewModel: ObservableObject {
             if recentlyAddedStopID == stop.id {
                 recentlyAddedStopID = nil
             }
+            deletedStopUndo = undo
+            refreshBookmarkedPlans()
+            refreshRecentPlans()
+            scheduleDeleteUndoExpiry(for: undo.id)
         } catch {
             errorMessage = UserFacingErrorMessage.removeStop
         }
+    }
+
+    func undoDeleteStop() {
+        guard let deletedStopUndo else { return }
+
+        guard deletedStopUndo.planID == currentPlanID else {
+            clearDeleteUndo()
+            return
+        }
+
+        deleteUndoTask?.cancel()
+
+        do {
+            apply(try repository.restoreStop(deletedStopUndo.stop))
+            routePlanningMode = .manual
+            resetNavigationProgress()
+            selectedStopID = deletedStopUndo.stop.id
+            mapFocusRequest = MapStopFocusRequest(stopID: deletedStopUndo.stop.id)
+            self.deletedStopUndo = nil
+            refreshBookmarkedPlans()
+            refreshRecentPlans()
+        } catch {
+            errorMessage = UserFacingErrorMessage.restoreStop
+        }
+    }
+
+    func clearDeleteUndo() {
+        deleteUndoTask?.cancel()
+        deletedStopUndo = nil
     }
 
     func moveStops(from source: IndexSet, to destination: Int) {
@@ -426,6 +489,14 @@ final class HomeMapViewModel: ObservableObject {
         }
     }
 
+    func refreshRecentPlans() {
+        do {
+            recentPlans = try repository.loadRecentPlans()
+        } catch {
+            errorMessage = UserFacingErrorMessage.loadRoutes
+        }
+    }
+
     private func scheduleSearch() {
         searchTask?.cancel()
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -468,6 +539,20 @@ final class HomeMapViewModel: ObservableObject {
         activeNavigationStopID = nil
     }
 
+    private func scheduleDeleteUndoExpiry(for undoID: UUID) {
+        deleteUndoTask?.cancel()
+        deleteUndoTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: 4_000_000_000)
+            } catch {
+                return
+            }
+
+            guard deletedStopUndo?.id == undoID else { return }
+            deletedStopUndo = nil
+        }
+    }
+
     private func manualPinPlaceID(for coordinate: CLLocationCoordinate2D) -> String {
         "manual-pin:\(coordinate.latitude.rounded(toPlaces: 6)),\(coordinate.longitude.rounded(toPlaces: 6))"
     }
@@ -485,6 +570,17 @@ final class HomeMapViewModel: ObservableObject {
     private func formattedCoordinate(_ coordinate: CLLocationCoordinate2D) -> String {
         "\(coordinate.latitude.rounded(toPlaces: 5)), \(coordinate.longitude.rounded(toPlaces: 5))"
     }
+}
+
+struct MapStopFocusRequest: Equatable {
+    let id = UUID()
+    let stopID: UUID
+}
+
+struct DeletedStopUndo: Identifiable, Equatable {
+    let id = UUID()
+    let planID: UUID?
+    let stop: PlanStopSnapshot
 }
 
 private extension Double {

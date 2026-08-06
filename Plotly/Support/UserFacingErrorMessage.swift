@@ -2,6 +2,7 @@ import Foundation
 
 enum UserFacingErrorMessage {
     static let loadRoute = "We could not load your saved route. Please close and reopen Plotly."
+    static let loadRoutes = "We could not load recent routes right now."
     static let loadBookmarks = "We could not load bookmarked routes right now."
     static let placeSearch = "We could not search places. Check your connection and try again."
     static let addStop = "We could not add that place. Please search for it again."
@@ -11,6 +12,7 @@ enum UserFacingErrorMessage {
     static let createRoute = "We could not create a new route. Please try again."
     static let saveNote = "We could not save the note. Please try again."
     static let removeStop = "We could not remove that stop. Please try again."
+    static let restoreStop = "We could not restore that stop. Please add it again."
     static let reorderStops = "We could not reorder the stops. Please try again."
     static let planRoute = "We could not apply that route plan. Please try again."
     static let updateProgress = "We could not update the stop progress. Please try again."

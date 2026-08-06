@@ -32,6 +32,24 @@ struct PlanSnapshot: Identifiable, Equatable {
     let title: String
     let isFavorite: Bool
     let stops: [PlanStopSnapshot]
+    let isCurrent: Bool
+    let updatedAt: Date
+
+    init(
+        id: UUID,
+        title: String,
+        isFavorite: Bool,
+        stops: [PlanStopSnapshot],
+        isCurrent: Bool = false,
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.title = title
+        self.isFavorite = isFavorite
+        self.stops = stops
+        self.isCurrent = isCurrent
+        self.updatedAt = updatedAt
+    }
 }
 
 struct PlanStopSnapshot: Identifiable, Equatable {
