@@ -1373,11 +1373,6 @@ private enum RouteStopRole {
     }
 }
 
-private enum StopRowSwipeAction {
-    case edit
-    case delete
-}
-
 private struct StopRow: View {
     let stop: PlanStopSnapshot
     let role: RouteStopRole
@@ -1397,21 +1392,15 @@ private struct StopRow: View {
     @GestureState private var swipeTranslation: CGFloat = 0
     @State private var swipeOffset: CGFloat = 0
     @State private var rowWidth: CGFloat = 0
-    @State private var committedSwipeAction: StopRowSwipeAction?
+    @State private var isCommittingDelete = false
 
     private let swipeActionWidth: CGFloat = 86
-    private let swipeRevealThreshold: CGFloat = 0.42
-    private let swipeCommitThreshold: CGFloat = 1.12
 
     var body: some View {
         ZStack {
             activeSwipeColor
 
-            HStack(spacing: 0) {
-                editAction
-                Spacer(minLength: 0)
-                deleteAction
-            }
+            swipeActionsBackground
 
             rowContent
                 .offset(x: effectiveSwipeOffset)
@@ -1431,6 +1420,22 @@ private struct StopRow: View {
         .clipped()
         .accessibilityIdentifier("plan-stop-row")
         .accessibilityAddTraits(.isButton)
+    }
+
+    @ViewBuilder
+    private var swipeActionsBackground: some View {
+        if effectiveSwipeOffset > 0 {
+            HStack(spacing: 0) {
+                editAction
+                Spacer(minLength: 0)
+            }
+        } else if effectiveSwipeOffset < 0 {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                deleteAction
+                    .frame(width: max(swipeActionWidth, abs(effectiveSwipeOffset)))
+            }
+        }
     }
 
     private var rowContent: some View {
@@ -1569,30 +1574,25 @@ private struct StopRow: View {
     private var swipeGesture: some Gesture {
         DragGesture(minimumDistance: 16)
             .updating($swipeTranslation) { value, state, _ in
-                guard committedSwipeAction == nil else { return }
+                guard !isCommittingDelete else { return }
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
                 state = value.translation.width
             }
             .onEnded { value in
-                guard committedSwipeAction == nil else { return }
+                guard !isCommittingDelete else { return }
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
                 let proposedOffset = swipeOffset + value.translation.width
-                let predictedOffset = swipeOffset + value.predictedEndTranslation.width
+                let fullSwipeThreshold = max(rowWidth * 0.62, swipeActionWidth + 34)
 
-                if predictedOffset > swipeActionWidth * swipeCommitThreshold {
-                    commitSwipe(.edit)
+                if proposedOffset < -fullSwipeThreshold {
+                    commitDeleteSwipe()
                     return
                 }
 
-                if predictedOffset < -swipeActionWidth * swipeCommitThreshold {
-                    commitSwipe(.delete)
-                    return
-                }
-
-                withAnimation(.spring(response: 0.24, dampingFraction: 0.88)) {
-                    if proposedOffset > swipeActionWidth * swipeRevealThreshold {
+                withAnimation(.interactiveSpring(response: 0.28, dampingFraction: 0.86)) {
+                    if proposedOffset > swipeActionWidth * 0.34 {
                         swipeOffset = swipeActionWidth
-                    } else if proposedOffset < -swipeActionWidth * swipeRevealThreshold {
+                    } else if proposedOffset < -swipeActionWidth * 0.34 {
                         swipeOffset = -swipeActionWidth
                     } else {
                         swipeOffset = 0
@@ -1602,20 +1602,21 @@ private struct StopRow: View {
     }
 
     private var effectiveSwipeOffset: CGFloat {
-        if committedSwipeAction != nil {
+        if isCommittingDelete {
             return swipeOffset
         }
 
-        return min(swipeActionWidth, max(-swipeActionWidth, swipeOffset + swipeTranslation))
+        let fullSwipeLimit = max(rowWidth, swipeActionWidth)
+        return min(swipeActionWidth, max(-fullSwipeLimit, swipeOffset + swipeTranslation))
     }
 
     private var activeSwipeColor: Color {
-        if effectiveSwipeOffset > 0 {
-            return Color(.systemBlue)
+        if isCommittingDelete || effectiveSwipeOffset < -swipeActionWidth {
+            return Color(.systemRed)
         }
 
-        if effectiveSwipeOffset < 0 {
-            return Color(.systemRed)
+        if effectiveSwipeOffset > 0 {
+            return Color(.systemBlue)
         }
 
         return .clear
@@ -1637,24 +1638,16 @@ private struct StopRow: View {
         onEditNote()
     }
 
-    private func commitSwipe(_ action: StopRowSwipeAction) {
-        committedSwipeAction = action
-        let direction: CGFloat = action == .edit ? 1 : -1
-        let offscreenOffset = direction * max(rowWidth, swipeActionWidth * 4)
+    private func commitDeleteSwipe() {
+        isCommittingDelete = true
+        let offscreenOffset = -max(rowWidth, swipeActionWidth * 2)
 
-        withAnimation(.easeInOut(duration: 0.22)) {
+        withAnimation(.easeOut(duration: 0.22)) {
             swipeOffset = offscreenOffset
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
-            switch action {
-            case .edit:
-                onEditNote()
-                committedSwipeAction = nil
-                swipeOffset = 0
-            case .delete:
-                onDelete()
-            }
+            onDelete()
         }
     }
 
