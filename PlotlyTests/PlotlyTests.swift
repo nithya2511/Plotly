@@ -316,9 +316,20 @@ final class PlotlyTests: XCTestCase {
         let currentPlan = try repository.loadCurrentPlan()
 
         XCTAssertNotEqual(newPlan.id, originalPlan.id)
-        XCTAssertEqual(newPlan.title, "Today's Route")
+        XCTAssertEqual(newPlan.title, "Today's Route 2")
         XCTAssertTrue(newPlan.stops.isEmpty)
         XCTAssertEqual(currentPlan.id, newPlan.id)
+    }
+
+    func testSwiftDataRepositoryCreatesUniquelyNamedNewPlans() throws {
+        let store = try makeStore()
+        let repository = store.repository
+
+        let firstNewPlan = try repository.createNewPlan()
+        let secondNewPlan = try repository.createNewPlan()
+
+        XCTAssertEqual(firstNewPlan.title, "Today's Route 2")
+        XCTAssertEqual(secondNewPlan.title, "Today's Route 3")
     }
 
     func testSwiftDataRepositoryClaimsLegacyCurrentPlanForSignedInUser() throws {
@@ -716,7 +727,7 @@ final class PlotlyTests: XCTestCase {
         viewModel.selectedStopID = existingStop.id
         viewModel.createNewRoute()
 
-        XCTAssertEqual(viewModel.planTitle, "Today's Route")
+        XCTAssertEqual(viewModel.planTitle, "Today's Route 2")
         XCTAssertTrue(viewModel.stops.isEmpty)
         XCTAssertNil(viewModel.selectedStopID)
     }
@@ -743,7 +754,7 @@ final class PlotlyTests: XCTestCase {
         viewModel.saveRouteDetails(title: "House Viewings", isFavorite: false)
         viewModel.createNewRoute()
 
-        XCTAssertEqual(viewModel.planTitle, "Today's Route")
+        XCTAssertEqual(viewModel.planTitle, "Today's Route 2")
         XCTAssertTrue(viewModel.stops.isEmpty)
         XCTAssertTrue(viewModel.recentPlans.contains { $0.title == "House Viewings" })
     }
@@ -770,7 +781,7 @@ final class PlotlyTests: XCTestCase {
         viewModel.saveRouteDetails(title: "Temporary Route", isFavorite: false)
         viewModel.discardCurrentRouteAndCreateNew()
 
-        XCTAssertEqual(viewModel.planTitle, "Today's Route")
+        XCTAssertEqual(viewModel.planTitle, "Today's Route 2")
         XCTAssertTrue(viewModel.stops.isEmpty)
         XCTAssertFalse(viewModel.recentPlans.contains { $0.title == "Temporary Route" })
     }
@@ -1102,13 +1113,13 @@ private final class MockPlanRepository: PlanRepository {
         if !plan.stops.isEmpty {
             savedPlans.insert(plan, at: 0)
         }
-        plan = PlanSnapshot(id: UUID(), title: "Today's Route", isFavorite: false, stops: [])
+        plan = PlanSnapshot(id: UUID(), title: nextNewPlanTitle(), isFavorite: false, stops: [])
         return plan
     }
 
     func discardCurrentPlanAndCreateNew() throws -> PlanSnapshot {
         savedPlans.removeAll { $0.id == plan.id }
-        plan = PlanSnapshot(id: UUID(), title: "Today's Route", isFavorite: false, stops: [])
+        plan = PlanSnapshot(id: UUID(), title: nextNewPlanTitle(), isFavorite: false, stops: [])
         return plan
     }
 
@@ -1260,6 +1271,21 @@ private final class MockPlanRepository: PlanRepository {
         }
         plan = PlanSnapshot(id: plan.id, title: plan.title, isFavorite: plan.isFavorite, stops: reindexedStops)
         return plan
+    }
+
+    private func nextNewPlanTitle() -> String {
+        let baseTitle = "Today's Route"
+        let existingTitles = Set(savedPlans.map(\.title) + [plan.title])
+
+        guard existingTitles.contains(baseTitle) else {
+            return baseTitle
+        }
+
+        var suffix = 2
+        while existingTitles.contains("\(baseTitle) \(suffix)") {
+            suffix += 1
+        }
+        return "\(baseTitle) \(suffix)"
     }
 }
 

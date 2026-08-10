@@ -168,6 +168,8 @@ struct HomeMapScreen: View {
             }
             .padding(.horizontal, 14)
             .padding(.top, 10)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+            .zIndex(1)
 
             if viewModel.draftMapPinCoordinate != nil {
                 VStack {
@@ -229,6 +231,7 @@ struct HomeMapScreen: View {
             }
             .offset(y: -keyboardSheetLift)
             .ignoresSafeArea(edges: .bottom)
+            .zIndex(0)
 
             if isMainMenuPresented {
                 Color.black.opacity(0.24)
@@ -299,12 +302,13 @@ struct HomeMapScreen: View {
     }
 
     private var keyboardSheetLift: CGFloat {
-        keyboardHeight
+        0
     }
 
     private var visibleSheetHeight: CGFloat {
         sheetDetent.sheetHeight(
-            hasStops: !viewModel.stops.isEmpty,
+            stopCount: viewModel.stops.count,
+            isAddingStop: viewModel.isAddingStop,
             isKeyboardVisible: keyboardHeight > 0
         )
     }
@@ -331,7 +335,9 @@ private enum PlanSheetDetent {
     case collapsed
     case expanded
 
-    func sheetHeight(hasStops: Bool, isKeyboardVisible: Bool = false) -> CGFloat {
+    func sheetHeight(stopCount: Int, isAddingStop: Bool = false, isKeyboardVisible: Bool = false) -> CGFloat {
+        let hasStops = stopCount > 0
+
         if isKeyboardVisible {
             switch (self, hasStops) {
             case (.collapsed, false):
@@ -341,7 +347,7 @@ private enum PlanSheetDetent {
             case (.expanded, false):
                 return 210
             case (.expanded, true):
-                return 292
+                return min(292, dynamicExpandedHeight(stopCount: stopCount, isAddingStop: isAddingStop))
             }
         }
 
@@ -353,8 +359,24 @@ private enum PlanSheetDetent {
         case (.expanded, false):
             return 260
         case (.expanded, true):
-            return 460
+            return min(460, dynamicExpandedHeight(stopCount: stopCount, isAddingStop: isAddingStop))
         }
+    }
+
+    private func dynamicExpandedHeight(stopCount: Int, isAddingStop: Bool) -> CGFloat {
+        let sheetChromeHeight: CGFloat = 80
+        let routeMetaHeight: CGFloat = 32
+        let estimatedStopRowHeight: CGFloat = 82
+        let addingStopHeight: CGFloat = isAddingStop ? 58 : 0
+        let listBottomPadding: CGFloat = 12
+        let optimizeButtonAreaHeight: CGFloat = 80
+
+        return sheetChromeHeight
+            + routeMetaHeight
+            + (CGFloat(stopCount) * estimatedStopRowHeight)
+            + addingStopHeight
+            + listBottomPadding
+            + optimizeButtonAreaHeight
     }
 }
 
@@ -742,14 +764,16 @@ private struct PlanSheet: View {
 
     private var collapsedContentHeight: CGFloat {
         PlanSheetDetent.collapsed.sheetHeight(
-            hasStops: !viewModel.stops.isEmpty,
+            stopCount: viewModel.stops.count,
+            isAddingStop: viewModel.isAddingStop,
             isKeyboardVisible: isKeyboardVisible
         )
     }
 
     private var expandedContentHeight: CGFloat {
         PlanSheetDetent.expanded.sheetHeight(
-            hasStops: !viewModel.stops.isEmpty,
+            stopCount: viewModel.stops.count,
+            isAddingStop: viewModel.isAddingStop,
             isKeyboardVisible: isKeyboardVisible
         )
     }
@@ -930,7 +954,7 @@ private struct PlanSheet: View {
                 ZStack(alignment: .top) {
                     Color(.systemBackground)
                         .opacity(0.001)
-                        .frame(maxWidth: .infinity, minHeight: 300)
+                        .frame(maxWidth: .infinity)
                         .contentShape(Rectangle())
                         .onTapGesture(perform: clearRouteInteraction)
                         .onDrop(of: [UTType.text], isTargeted: nil) { _ in
@@ -992,7 +1016,7 @@ private struct PlanSheet: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
                 }
-                .frame(maxWidth: .infinity, minHeight: 300, alignment: .top)
+                .frame(maxWidth: .infinity, alignment: .top)
             }
             .contentShape(Rectangle())
             .onDrop(of: [UTType.text], isTargeted: nil) { _ in
@@ -1112,30 +1136,15 @@ private struct OptimizeRouteButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
-                    .font(.subheadline.weight(.semibold))
-
-                Text("Optimize route")
-                    .font(.subheadline.weight(.semibold))
-
-                Spacer()
-
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .foregroundStyle(isEnabled ? .primary : .secondary)
-            .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity, minHeight: 48)
-            .background(Color(.secondarySystemBackground).opacity(isEnabled ? 0.62 : 0.42))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(.white.opacity(0.16), lineWidth: 1)
-            }
+            Label("Optimize Route", systemImage: "arrow.triangle.branch")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 40)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderedProminent)
+        .buttonBorderShape(.capsule)
+        .tint(isEnabled ? Color(.systemBlue) : Color(.systemGray4))
+        .foregroundStyle(isEnabled ? .white : Color(.secondaryLabel))
+        .controlSize(.regular)
         .disabled(!isEnabled)
         .accessibilityLabel("Optimize route")
     }

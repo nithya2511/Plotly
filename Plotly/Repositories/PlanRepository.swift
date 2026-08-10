@@ -106,7 +106,7 @@ final class SwiftDataPlanRepository: PlanRepository {
             plan.isCurrent = false
         }
 
-        let newPlan = Plan(userID: userID, title: currentPlanTitle, isCurrent: true)
+        let newPlan = Plan(userID: userID, title: nextNewPlanTitle(existingPlans: plans), isCurrent: true)
         modelContext.insert(newPlan)
         try modelContext.save()
         return try snapshot(for: newPlan)
@@ -267,6 +267,21 @@ final class SwiftDataPlanRepository: PlanRepository {
         let adjustedDestination = destination - source.filter { $0 < destination }.count
         remainingStops.insert(contentsOf: movingStops, at: adjustedDestination)
         return remainingStops
+    }
+
+    private func nextNewPlanTitle(existingPlans: [Plan]) -> String {
+        let baseTitle = currentPlanTitle
+        let existingTitles = Set(existingPlans.map(\.title))
+
+        guard existingTitles.contains(baseTitle) else {
+            return baseTitle
+        }
+
+        var suffix = 2
+        while existingTitles.contains("\(baseTitle) \(suffix)") {
+            suffix += 1
+        }
+        return "\(baseTitle) \(suffix)"
     }
 
     private func currentPlan() throws -> Plan {
