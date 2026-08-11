@@ -220,12 +220,6 @@ private struct MapKitPlannerMapView: View {
             onMapFeatureSelection(feature)
         }
         .mapFeatureSelectionAccessory(nil)
-        .mapControls {
-            if userCoordinate != nil {
-                MapUserLocationButton()
-            }
-            MapCompass()
-        }
     }
 
     private func focusMap() {

@@ -196,7 +196,7 @@ struct HomeMapScreen: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            if viewModel.stops.count > 1, viewModel.draftMapPinCoordinate == nil {
+            if viewModel.stops.count > 1, viewModel.draftMapPinCoordinate == nil, sheetDetent != .full {
                 VStack {
                     Spacer()
                     HStack {
@@ -209,7 +209,7 @@ struct HomeMapScreen: View {
                     }
                 }
                 .padding(.trailing, 14)
-                .padding(.bottom, visibleSheetHeight + keyboardSheetLift + 14)
+                .padding(.bottom, routeOverviewButtonBottomPadding)
                 .transition(.scale.combined(with: .opacity))
             }
 
@@ -231,7 +231,7 @@ struct HomeMapScreen: View {
             }
             .offset(y: -keyboardSheetLift)
             .ignoresSafeArea(edges: .bottom)
-            .zIndex(0)
+            .zIndex(sheetDetent == .full ? 1.5 : 0)
 
             if isMainMenuPresented {
                 Color.black.opacity(0.24)
@@ -313,6 +313,10 @@ struct HomeMapScreen: View {
         )
     }
 
+    private var routeOverviewButtonBottomPadding: CGFloat {
+        visibleSheetHeight + 18
+    }
+
     private func dismissKeyboard() {
         NotificationCenter.default.post(name: .plotlyDismissKeyboard, object: nil)
     }
@@ -334,9 +338,11 @@ struct HomeMapScreen: View {
 private enum PlanSheetDetent {
     case collapsed
     case expanded
+    case full
 
     func sheetHeight(stopCount: Int, isAddingStop: Bool = false, isKeyboardVisible: Bool = false) -> CGFloat {
         let hasStops = stopCount > 0
+        let fullHeight = Self.fullSheetHeight
 
         if isKeyboardVisible {
             switch (self, hasStops) {
@@ -348,6 +354,8 @@ private enum PlanSheetDetent {
                 return 210
             case (.expanded, true):
                 return min(292, dynamicExpandedHeight(stopCount: stopCount, isAddingStop: isAddingStop))
+            case (.full, _):
+                return fullHeight
             }
         }
 
@@ -360,6 +368,8 @@ private enum PlanSheetDetent {
             return 260
         case (.expanded, true):
             return min(460, dynamicExpandedHeight(stopCount: stopCount, isAddingStop: isAddingStop))
+        case (.full, _):
+            return fullHeight
         }
     }
 
@@ -377,6 +387,16 @@ private enum PlanSheetDetent {
             + addingStopHeight
             + listBottomPadding
             + optimizeButtonAreaHeight
+    }
+
+    private static var fullSheetHeight: CGFloat {
+        let searchTopPadding: CGFloat = 10
+        let fullModeBottomGap: CGFloat = 10
+        let topSafeArea = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.windows.first(where: \.isKeyWindow)?.safeAreaInsets.top }
+            .first ?? 0
+
+        return max(UIScreen.main.bounds.height - topSafeArea - searchTopPadding - fullModeBottomGap, 0)
     }
 }
 
@@ -759,7 +779,15 @@ private struct PlanSheet: View {
     @FocusState private var isRouteTitleFocused: Bool
 
     private var isExpanded: Bool {
-        detent == .expanded
+        detent == .expanded || detent == .full
+    }
+
+    private var isFull: Bool {
+        detent == .full
+    }
+
+    private var showsRouteList: Bool {
+        detent != .collapsed
     }
 
     private var collapsedContentHeight: CGFloat {
@@ -778,12 +806,27 @@ private struct PlanSheet: View {
         )
     }
 
+    private var fullContentHeight: CGFloat {
+        PlanSheetDetent.full.sheetHeight(
+            stopCount: viewModel.stops.count,
+            isAddingStop: viewModel.isAddingStop,
+            isKeyboardVisible: isKeyboardVisible
+        )
+    }
+
     private var activeHeight: CGFloat {
-        isExpanded ? expandedContentHeight : collapsedContentHeight
+        switch detent {
+        case .collapsed:
+            return collapsedContentHeight
+        case .expanded:
+            return expandedContentHeight
+        case .full:
+            return fullContentHeight
+        }
     }
 
     private var displayedHeight: CGFloat {
-        max(collapsedContentHeight, activeHeight + dragOffset)
+        min(fullContentHeight, max(collapsedContentHeight, activeHeight + dragOffset))
     }
 
     private var showsOptimizeButton: Bool {
@@ -806,7 +849,7 @@ private struct PlanSheet: View {
                     )
                     .padding(.horizontal, 16)
                 }
-                .padding(.bottom, 18)
+                .padding(.bottom, isFull ? 24 : 18)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             } else {
                 sheetContent
@@ -815,12 +858,11 @@ private struct PlanSheet: View {
         }
         .frame(height: displayedHeight, alignment: .top)
         .clipped()
-        .background(.regularMaterial, in: UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22))
-        .overlay(alignment: .top) {
-            UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22)
-                .strokeBorder(.white.opacity(0.28), lineWidth: 1)
-        }
+        .background(sheetBackground)
+        .overlay(sheetBorder)
         .shadow(color: .black.opacity(0.18), radius: 16, y: -4)
+        .padding(.horizontal, 0)
+        .padding(.bottom, isFull ? 10 : 0)
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: detent)
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: viewModel.stops.count)
         .animation(.easeInOut(duration: 0.18), value: viewModel.isAddingStop)
@@ -847,16 +889,46 @@ private struct PlanSheet: View {
         }
     }
 
+    @ViewBuilder
+    private var sheetBackground: some View {
+        if isFull {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(.regularMaterial)
+        } else {
+            UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22)
+                .fill(.regularMaterial)
+        }
+    }
+
+    @ViewBuilder
+    private var sheetBorder: some View {
+        if isFull {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(.white.opacity(0.28), lineWidth: 1)
+        } else {
+            UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22)
+                .strokeBorder(.white.opacity(0.28), lineWidth: 1)
+        }
+    }
+
     private var dragHandle: some View {
         Capsule()
             .fill(.secondary.opacity(0.35))
             .frame(width: 42, height: 5)
-            .padding(.top, 9)
+            .frame(maxWidth: .infinity, minHeight: 28)
+            .padding(.top, 3)
             .contentShape(Rectangle())
             .onTapGesture {
                 clearRouteInteraction()
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                    detent = isExpanded ? .collapsed : .expanded
+                    switch detent {
+                    case .collapsed:
+                        detent = .expanded
+                    case .expanded:
+                        detent = .full
+                    case .full:
+                        detent = .expanded
+                    }
                 }
             }
             .gesture(sheetDragGesture)
@@ -866,7 +938,9 @@ private struct PlanSheet: View {
         DragGesture(minimumDistance: 8)
             .updating($dragOffset) { value, state, _ in
                 let translation = value.translation.height
-                if isExpanded {
+                if isFull {
+                    state = min(180, max(-12, translation))
+                } else if isExpanded {
                     state = min(80, max(-40, translation))
                 } else {
                     state = min(40, max(-160, translation))
@@ -874,7 +948,21 @@ private struct PlanSheet: View {
             }
             .onEnded { value in
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                    if value.translation.height > 36 {
+                    if detent == .full {
+                        if value.translation.height > 160 {
+                            detent = .collapsed
+                        } else if value.translation.height > 48 {
+                            detent = .expanded
+                        }
+                    } else if detent == .expanded {
+                        if value.translation.height > 48 {
+                            detent = .collapsed
+                        } else if value.translation.height < -48 {
+                            detent = .full
+                        }
+                    } else if value.translation.height < -130 {
+                        detent = .full
+                    } else if value.translation.height > 36 {
                         detent = .collapsed
                     } else if value.translation.height < -36 {
                         detent = .expanded
@@ -942,14 +1030,32 @@ private struct PlanSheet: View {
         .padding(.horizontal, 16)
         .contentShape(Rectangle())
         .onTapGesture(perform: clearRouteInteraction)
+        .gesture(sheetDragGesture)
     }
 
     @ViewBuilder
     private var sheetContent: some View {
         if viewModel.stops.isEmpty {
-            EmptyPlanPrompt(isAdding: viewModel.isAddingStop, pendingStopName: viewModel.pendingStopName)
+            if isFull {
+                VStack {
+                    Spacer(minLength: 0)
+                    EmptyPlanPrompt(
+                        isAdding: viewModel.isAddingStop,
+                        pendingStopName: viewModel.pendingStopName,
+                        isFullSheet: true
+                    )
+                    .padding(.horizontal, 16)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                EmptyPlanPrompt(
+                    isAdding: viewModel.isAddingStop,
+                    pendingStopName: viewModel.pendingStopName
+                )
                 .padding(.horizontal, 16)
-        } else if isExpanded {
+            }
+        } else if showsRouteList {
             ScrollView(showsIndicators: false) {
                 ZStack(alignment: .top) {
                     Color(.systemBackground)
@@ -1769,11 +1875,33 @@ private struct RouteStopIndicator: View {
 private struct EmptyPlanPrompt: View {
     let isAdding: Bool
     let pendingStopName: String?
+    var isFullSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if isAdding {
                 AddingStopRow(name: pendingStopName)
+            } else if isFullSheet {
+                VStack(spacing: 12) {
+                    Image(systemName: "mappin.slash")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(.secondary)
+
+                    VStack(spacing: 6) {
+                        Text("No stops added yet")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text("Search for places above to start building this route.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary.opacity(0.82))
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 28)
+                .background(Color(.secondarySystemBackground).opacity(0.58), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "magnifyingglass.circle.fill")
