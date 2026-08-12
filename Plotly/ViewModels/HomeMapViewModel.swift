@@ -436,6 +436,7 @@ final class HomeMapViewModel: ObservableObject {
     }
 
     func goToStop(_ stop: PlanStopSnapshot) {
+        resetCompletionFromStopIfNeeded(stop)
         isNavigatingRoute = true
         activeNavigationStopID = stop.id
         selectedStopID = stop.id
@@ -445,6 +446,11 @@ final class HomeMapViewModel: ObservableObject {
             activeNavigationStopID = nil
             errorMessage = UserFacingErrorMessage.openDirections
         }
+    }
+
+    func goToNextNavigationStop() {
+        guard let nextStop = nextNavigationStop() else { return }
+        goToStop(nextStop)
     }
 
     func completeActiveNavigationStopOnReturn() {
@@ -469,6 +475,24 @@ final class HomeMapViewModel: ObservableObject {
         }
 
         return stops[startIndex...].first { !visitedStopIDs.contains($0.id) }
+    }
+
+    private func resetCompletionFromStopIfNeeded(_ stop: PlanStopSnapshot) {
+        guard let stopIndex = stops.firstIndex(where: { $0.id == stop.id }) else { return }
+        let stopsToReset = stops[stopIndex...].filter { visitedStopIDs.contains($0.id) }
+        guard !stopsToReset.isEmpty else { return }
+
+        do {
+            var updatedPlan: PlanSnapshot?
+            for stop in stopsToReset {
+                updatedPlan = try repository.updateStopCompletion(id: stop.id, isCompleted: false)
+            }
+            if let updatedPlan {
+                apply(updatedPlan)
+            }
+        } catch {
+            errorMessage = UserFacingErrorMessage.updateProgress
+        }
     }
 
     private func focusNextNavigationStop() {

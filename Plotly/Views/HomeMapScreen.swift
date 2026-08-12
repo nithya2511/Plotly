@@ -461,9 +461,18 @@ private struct MainMenuDrawer: View {
     let onSignOut: () -> Void
     @Binding var isPresented: Bool
     @State private var isNewRouteConfirmationPresented = false
+    @State private var showsAllBookmarkedRoutes = false
 
     private var appAppearanceMode: AppAppearanceMode {
         AppAppearanceMode.normalized(appAppearanceModeRawValue)
+    }
+
+    private var visibleBookmarkedPlans: [PlanSnapshot] {
+        showsAllBookmarkedRoutes ? viewModel.bookmarkedPlans : Array(viewModel.bookmarkedPlans.prefix(3))
+    }
+
+    private var hiddenBookmarkedRouteCount: Int {
+        max(viewModel.bookmarkedPlans.count - 3, 0)
     }
 
     private func close() {
@@ -478,7 +487,7 @@ private struct MainMenuDrawer: View {
                 List {
                     Section {
                         Button {
-                            if viewModel.stops.isEmpty {
+                            if viewModel.stops.isEmpty || viewModel.isPlanFavorite {
                                 viewModel.createNewRoute()
                                 close()
                             } else {
@@ -497,7 +506,7 @@ private struct MainMenuDrawer: View {
                                 description: Text("Routes you create will appear here.")
                             )
                         } else {
-                            ForEach(viewModel.recentPlans) { plan in
+                            ForEach(viewModel.recentPlans.prefix(1)) { plan in
                                 Button {
                                     viewModel.selectRecentPlan(plan)
                                     close()
@@ -539,7 +548,7 @@ private struct MainMenuDrawer: View {
                                 description: Text("Bookmarked routes will appear here.")
                             )
                         } else {
-                            ForEach(viewModel.bookmarkedPlans) { plan in
+                            ForEach(visibleBookmarkedPlans) { plan in
                                 Button {
                                     viewModel.selectRecentPlan(plan)
                                     close()
@@ -569,6 +578,20 @@ private struct MainMenuDrawer: View {
                                     }
                                 }
                                 .buttonStyle(.plain)
+                            }
+
+                            if hiddenBookmarkedRouteCount > 0 {
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.18)) {
+                                        showsAllBookmarkedRoutes.toggle()
+                                    }
+                                } label: {
+                                    Label(
+                                        showsAllBookmarkedRoutes ? "Show less" : "More bookmarked routes",
+                                        systemImage: showsAllBookmarkedRoutes ? "chevron.up" : "ellipsis.circle"
+                                    )
+                                    .font(.subheadline.weight(.semibold))
+                                }
                             }
                         }
                     }
@@ -1095,7 +1118,8 @@ private struct PlanSheet: View {
                                     isActiveNavigationStop: viewModel.activeNavigationStopID == stop.id,
                                     showsSeparator: index < viewModel.stops.count - 1,
                                     onSelect: { viewModel.selectedStopID = stop.id },
-                                    onGo: { viewModel.goToStop(stop) },
+                                    onGoNext: viewModel.goToNextNavigationStop,
+                                    onGoToStop: { viewModel.goToStop(stop) },
                                     onEditNote: { viewModel.startEditingNote(for: stop) },
                                     onMarkCompleted: { viewModel.markStopCompleted(stop) },
                                     onMarkIncomplete: { viewModel.markStopIncomplete(stop) },
@@ -1139,7 +1163,7 @@ private struct PlanSheet: View {
                 isAdding: viewModel.isAddingStop,
                 isNextStop: nextStop != nil,
                 pendingStopName: viewModel.pendingStopName,
-                onGo: { viewModel.goToStop(previewStop) },
+                onGo: viewModel.goToNextNavigationStop,
                 onExpand: {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                         detent = .expanded
@@ -1499,7 +1523,8 @@ private struct StopRow: View {
     let isActiveNavigationStop: Bool
     let showsSeparator: Bool
     let onSelect: () -> Void
-    let onGo: () -> Void
+    let onGoNext: () -> Void
+    let onGoToStop: () -> Void
     let onEditNote: () -> Void
     let onMarkCompleted: () -> Void
     let onMarkIncomplete: () -> Void
@@ -1589,7 +1614,7 @@ private struct StopRow: View {
 
             HStack(spacing: 6) {
                 if isNextNavigationStop {
-                    Button(action: onGo) {
+                    Button(action: onGoNext) {
                         Label("Go", systemImage: "location.north.fill")
                             .labelStyle(.titleAndIcon)
                             .font(.caption.weight(.bold))
@@ -1601,7 +1626,7 @@ private struct StopRow: View {
 
                 Menu {
                     Section("Navigation") {
-                        Button(isVisited ? "Go again" : "Go to stop", systemImage: "location.north.line", action: onGo)
+                        Button(isVisited ? "Go again" : "Go to stop", systemImage: "location.north.line", action: onGoToStop)
                     }
 
                     Section("Progress") {

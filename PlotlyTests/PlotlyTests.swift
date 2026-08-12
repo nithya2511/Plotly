@@ -925,6 +925,71 @@ final class PlotlyTests: XCTestCase {
         XCTAssertEqual(navigationService.openedStopIDs, [second.id])
     }
 
+    func testViewModelGoToNextNavigationStopSkipsTraversedStops() throws {
+        let first = makeStop(placeID: "first", name: "First", sortIndex: 0)
+        let second = makeStop(placeID: "second", name: "Second", sortIndex: 1)
+        let third = makeStop(placeID: "third", name: "Third", sortIndex: 2)
+        let navigationService = MockRouteNavigationService()
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(stops: [first, second, third]),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                )
+            ),
+            locationService: MockLocationService(),
+            navigationService: navigationService
+        )
+
+        viewModel.load()
+        viewModel.markStopCompleted(first)
+        viewModel.markStopCompleted(second)
+        viewModel.goToNextNavigationStop()
+
+        XCTAssertEqual(viewModel.activeNavigationStopID, third.id)
+        XCTAssertEqual(viewModel.selectedStopID, third.id)
+        XCTAssertEqual(navigationService.openedStopIDs, [third.id])
+    }
+
+    func testViewModelGoAgainResetsSelectedStopAndStopsBelow() throws {
+        let first = makeStop(placeID: "first", name: "First", sortIndex: 0)
+        let second = makeStop(placeID: "second", name: "Second", sortIndex: 1)
+        let third = makeStop(placeID: "third", name: "Third", sortIndex: 2)
+        let navigationService = MockRouteNavigationService()
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(stops: [first, second, third]),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                )
+            ),
+            locationService: MockLocationService(),
+            navigationService: navigationService
+        )
+
+        viewModel.load()
+        viewModel.markStopCompleted(first)
+        viewModel.markStopCompleted(second)
+        viewModel.markStopCompleted(third)
+
+        viewModel.goToStop(second)
+
+        XCTAssertEqual(viewModel.visitedStopIDs, [first.id])
+        XCTAssertEqual(viewModel.activeNavigationStopID, second.id)
+        XCTAssertEqual(viewModel.selectedStopID, second.id)
+        XCTAssertEqual(navigationService.openedStopIDs, [second.id])
+    }
+
     func testViewModelShowsFriendlyMessageWhenMapsDoesNotOpen() throws {
         let stop = makeStop(placeID: "stop", name: "Stop", sortIndex: 0)
         let navigationService = MockRouteNavigationService(shouldOpenDirections: false)
