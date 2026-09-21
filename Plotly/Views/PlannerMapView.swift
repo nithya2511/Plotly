@@ -59,6 +59,7 @@ private struct MapKitPlannerMapView: View {
     let onMapFeatureSelection: (MapFeature) -> Void
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var selectedMapFeature: MapFeature?
+    @State private var lastAppliedCameraRegion: ComparableMapRegion?
 
     private var routeCoordinates: [CLLocationCoordinate2D] {
         stops.map(\.coordinate)
@@ -205,7 +206,9 @@ private struct MapKitPlannerMapView: View {
             focusMap()
         }
         .onChange(of: visibleInsets) { _, _ in
-            focusMap()
+            if draftMapPinCoordinate != nil || selectedStopID != nil {
+                focusMap()
+            }
         }
         .onChange(of: mapFocusRequest) { _, request in
             guard let request else { return }
@@ -218,14 +221,13 @@ private struct MapKitPlannerMapView: View {
         .onChange(of: selectedMapFeature) { _, feature in
             guard let feature else { return }
             onMapFeatureSelection(feature)
+            selectedMapFeature = nil
         }
         .mapFeatureSelectionAccessory(nil)
     }
 
     private func focusMap() {
-        withAnimation(.easeInOut(duration: 0.28)) {
-            cameraPosition = focusedCameraPosition
-        }
+        applyCameraPosition(focusedCameraPosition)
     }
 
     private func focusMap(on stopID: UUID) {
@@ -234,13 +236,27 @@ private struct MapKitPlannerMapView: View {
             return
         }
 
-        withAnimation(.easeInOut(duration: 0.28)) {
-            cameraPosition = .region(
+        applyCameraPosition(
+            .region(
                 visibleCenterRegion(
                     center: stop.coordinate,
                     span: MKCoordinateSpan(latitudeDelta: 0.03, longitudeDelta: 0.03)
                 )
             )
+        )
+    }
+
+    private func applyCameraPosition(_ position: MapCameraPosition) {
+        if let region = position.region {
+            let comparableRegion = ComparableMapRegion(region)
+            guard comparableRegion != lastAppliedCameraRegion else { return }
+            lastAppliedCameraRegion = comparableRegion
+        } else {
+            lastAppliedCameraRegion = nil
+        }
+
+        withAnimation(.easeInOut(duration: 0.28)) {
+            cameraPosition = position
         }
     }
 
@@ -293,4 +309,22 @@ private struct MapKitPlannerMapView: View {
 private struct DraftMapPinFocusKey: Equatable {
     let latitude: CLLocationDegrees
     let longitude: CLLocationDegrees
+}
+
+private struct ComparableMapRegion: Equatable {
+    let latitude: Int
+    let longitude: Int
+    let latitudeDelta: Int
+    let longitudeDelta: Int
+
+    init(_ region: MKCoordinateRegion) {
+        latitude = Self.scaled(region.center.latitude)
+        longitude = Self.scaled(region.center.longitude)
+        latitudeDelta = Self.scaled(region.span.latitudeDelta)
+        longitudeDelta = Self.scaled(region.span.longitudeDelta)
+    }
+
+    private static func scaled(_ value: CLLocationDegrees) -> Int {
+        Int((value * 1_000_000).rounded())
+    }
 }

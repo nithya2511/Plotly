@@ -7,6 +7,8 @@ import SwiftUI
 protocol PlaceSearchService {
     func suggestions(for query: String, near coordinate: CLLocationCoordinate2D?) async throws -> [PlaceSuggestion]
     func details(for suggestion: PlaceSuggestion) async throws -> PlaceDetails
+    func details(forFreeformQuery query: String, near coordinate: CLLocationCoordinate2D?) async throws -> PlaceDetails
+    func details(forMapLink link: String, near coordinate: CLLocationCoordinate2D?) async throws -> PlaceDetails
     func details(for mapFeature: MapFeature) async throws -> PlaceDetails
 }
 

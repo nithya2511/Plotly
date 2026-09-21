@@ -4,6 +4,7 @@ import Foundation
 @MainActor
 protocol LocationService {
     func requestCurrentLocation() async -> CLLocationCoordinate2D?
+    func cancelCurrentRequest()
 }
 
 @MainActor
@@ -33,6 +34,11 @@ final class CoreLocationService: NSObject, LocationService, CLLocationManagerDel
                 finish(with: nil)
             }
         }
+    }
+
+    func cancelCurrentRequest() {
+        manager.stopUpdatingLocation()
+        finish(with: nil)
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {

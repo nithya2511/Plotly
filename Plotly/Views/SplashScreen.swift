@@ -17,8 +17,21 @@ struct SplashScreen: View {
             VStack(spacing: 24) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .fill(.regularMaterial)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(.systemBlue).opacity(0.18),
+                                    Color(.systemBlue).opacity(0.06)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
                         .frame(width: 116, height: 116)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                                .strokeBorder(Color(.systemBlue).opacity(0.16), lineWidth: 1)
+                        }
                         .shadow(color: .black.opacity(0.14), radius: 18, y: 8)
 
                     RouteSplashMark()

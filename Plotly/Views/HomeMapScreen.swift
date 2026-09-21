@@ -111,6 +111,7 @@ struct HomeMapScreen: View {
     @State private var isMainMenuPresented = false
     @State private var isRoutePlannerPresented = false
     @State private var isRouteEditorPresented = false
+    @State private var isAddressImportPresented = false
     @State private var keyboardHeight: CGFloat = 0
     @State private var routeOverviewRequest: UUID?
 
@@ -248,6 +249,10 @@ struct HomeMapScreen: View {
                     viewModel: viewModel,
                     account: account,
                     onSignOut: onSignOut,
+                    onImportAddresses: {
+                        dismissKeyboard()
+                        isAddressImportPresented = true
+                    },
                     isPresented: $isMainMenuPresented
                 )
                 .transition(.move(edge: .leading).combined(with: .opacity))
@@ -272,8 +277,11 @@ struct HomeMapScreen: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            viewModel.completeActiveNavigationStopOnReturn()
+            if phase == .active {
+                viewModel.completeActiveNavigationStopOnReturn()
+            } else {
+                viewModel.suspendForBackground()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
             updateKeyboardHeight(from: notification)
@@ -291,6 +299,9 @@ struct HomeMapScreen: View {
         }
         .sheet(isPresented: $isRouteEditorPresented) {
             RouteEditorSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: $isAddressImportPresented) {
+            AddressImportSheet(viewModel: viewModel)
         }
     }
 
@@ -395,8 +406,11 @@ private enum PlanSheetDetent {
         let topSafeArea = UIApplication.shared.connectedScenes
             .compactMap { ($0 as? UIWindowScene)?.windows.first(where: \.isKeyWindow)?.safeAreaInsets.top }
             .first ?? 0
+        let screenHeight = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.screen.bounds.height }
+            .first ?? 0
 
-        return max(UIScreen.main.bounds.height - topSafeArea - searchTopPadding - fullModeBottomGap, 0)
+        return max(screenHeight - topSafeArea - searchTopPadding - fullModeBottomGap, 0)
     }
 }
 
@@ -459,16 +473,16 @@ private struct MainMenuDrawer: View {
     @ObservedObject var viewModel: HomeMapViewModel
     let account: UserAccountSnapshot
     let onSignOut: () -> Void
+    let onImportAddresses: () -> Void
     @Binding var isPresented: Bool
     @State private var isNewRouteConfirmationPresented = false
-    @State private var showsAllBookmarkedRoutes = false
 
     private var appAppearanceMode: AppAppearanceMode {
         AppAppearanceMode.normalized(appAppearanceModeRawValue)
     }
 
     private var visibleBookmarkedPlans: [PlanSnapshot] {
-        showsAllBookmarkedRoutes ? viewModel.bookmarkedPlans : Array(viewModel.bookmarkedPlans.prefix(3))
+        Array(viewModel.bookmarkedPlans.prefix(3))
     }
 
     private var hiddenBookmarkedRouteCount: Int {
@@ -496,107 +510,96 @@ private struct MainMenuDrawer: View {
                         } label: {
                             Label("New route", systemImage: "plus.circle.fill")
                         }
+                    } header: {
+                        DrawerSectionHeader("Create")
                     }
 
-                    Section("Recent routes") {
-                        if viewModel.recentPlans.isEmpty {
-                            ContentUnavailableView(
-                                "No Recent Routes",
-                                systemImage: "clock",
-                                description: Text("Routes you create will appear here.")
-                            )
-                        } else {
+                    Section {
+                        DrawerRouteGroupLabel("Recent route")
+
+                        if !viewModel.recentPlans.isEmpty {
                             ForEach(viewModel.recentPlans.prefix(1)) { plan in
                                 Button {
                                     viewModel.selectRecentPlan(plan)
                                     close()
                                 } label: {
-                                    HStack(spacing: 12) {
-                                        Image(systemName: plan.isFavorite ? "bookmark.fill" : "clock")
-                                            .foregroundStyle(plan.isFavorite ? Color(.systemBlue) : .secondary)
-                                            .frame(width: 26)
-
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(plan.title)
-                                                .font(.subheadline.weight(.semibold))
-                                                .foregroundStyle(.primary)
-                                                .lineLimit(1)
-                                            Text("\(plan.stops.count) \(plan.stops.count == 1 ? "stop" : "stops")")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-
-                                        Spacer()
-
-                                        if plan.id == viewModel.currentPlanID {
-                                            Text("Current")
-                                                .font(.caption2.weight(.semibold))
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
+                                    RouteDrawerRow(
+                                        plan: plan,
+                                        currentPlanID: viewModel.currentPlanID,
+                                        systemImage: plan.isFavorite ? "bookmark.fill" : "clock",
+                                        iconColor: plan.isFavorite ? Color(.systemBlue) : .secondary
+                                    )
                                 }
                                 .buttonStyle(.plain)
                             }
-                        }
-                    }
-
-                    Section("Bookmarked routes") {
-                        if viewModel.bookmarkedPlans.isEmpty {
-                            ContentUnavailableView(
-                                "No Bookmarked Routes",
-                                systemImage: "bookmark",
-                                description: Text("Bookmarked routes will appear here.")
-                            )
                         } else {
+                            DrawerEmptyStateRow(
+                                title: "No recent route",
+                                subtitle: "Routes you create will appear here.",
+                                systemImage: "clock"
+                            )
+                        }
+
+                        DrawerRouteGroupLabel("Bookmarked routes")
+
+                        if !viewModel.bookmarkedPlans.isEmpty {
                             ForEach(visibleBookmarkedPlans) { plan in
                                 Button {
-                                    viewModel.selectRecentPlan(plan)
+                                    viewModel.selectBookmarkedPlan(plan)
                                     close()
                                 } label: {
-                                    HStack(spacing: 12) {
-                                        Image(systemName: "bookmark.fill")
-                                            .foregroundStyle(Color(.systemBlue))
-                                            .frame(width: 26)
-
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(plan.title)
-                                                .font(.subheadline.weight(.semibold))
-                                                .foregroundStyle(.primary)
-                                                .lineLimit(1)
-                                            Text("\(plan.stops.count) \(plan.stops.count == 1 ? "stop" : "stops")")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-
-                                        Spacer()
-
-                                        if plan.id == viewModel.currentPlanID {
-                                            Text("Current")
-                                                .font(.caption2.weight(.semibold))
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
+                                    RouteDrawerRow(
+                                        plan: plan,
+                                        currentPlanID: viewModel.currentPlanID,
+                                        systemImage: "bookmark.fill",
+                                        iconColor: Color(.systemBlue)
+                                    )
                                 }
                                 .buttonStyle(.plain)
                             }
 
                             if hiddenBookmarkedRouteCount > 0 {
-                                Button {
-                                    withAnimation(.easeInOut(duration: 0.18)) {
-                                        showsAllBookmarkedRoutes.toggle()
-                                    }
+                                NavigationLink {
+                                    BookmarkedRoutesList(
+                                        viewModel: viewModel,
+                                        close: close
+                                    )
                                 } label: {
                                     Label(
-                                        showsAllBookmarkedRoutes ? "Show less" : "More bookmarked routes",
-                                        systemImage: showsAllBookmarkedRoutes ? "chevron.up" : "ellipsis.circle"
+                                        "More bookmarked routes",
+                                        systemImage: "ellipsis.circle"
                                     )
                                     .font(.subheadline.weight(.semibold))
                                 }
                             }
+                        } else {
+                            DrawerEmptyStateRow(
+                                title: "No bookmarked routes",
+                                subtitle: "Bookmarked routes will appear here.",
+                                systemImage: "bookmark"
+                            )
                         }
+                    } header: {
+                        DrawerSectionHeader("Routes")
+                    } footer: {
+                        Text("The latest route and top bookmarked routes are shown here.")
+                            .textCase(nil)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
 
-                    Section("Account") {
+                    Section {
+                        Button {
+                            close()
+                            onImportAddresses()
+                        } label: {
+                            Label("Import addresses", systemImage: "list.bullet.rectangle")
+                        }
+                    } header: {
+                        DrawerSectionHeader("Import")
+                    }
+
+                    Section {
                         HStack(spacing: 12) {
                             Image(systemName: "person.crop.circle.fill")
                                 .font(.title2)
@@ -631,6 +634,8 @@ private struct MainMenuDrawer: View {
                                 systemImage: "rectangle.portrait.and.arrow.right"
                             )
                         }
+                    } header: {
+                        DrawerSectionHeader("Account")
                     }
                 }
                 .scrollContentBackground(.hidden)
@@ -674,6 +679,129 @@ private struct MainMenuDrawer: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Your current route can stay in Recent routes, or you can discard it before starting fresh.")
+            }
+        }
+    }
+}
+
+private struct BookmarkedRoutesList: View {
+    @ObservedObject var viewModel: HomeMapViewModel
+    let close: () -> Void
+
+    var body: some View {
+        List {
+            if viewModel.bookmarkedPlans.isEmpty {
+                ContentUnavailableView(
+                    "No Bookmarked Routes",
+                    systemImage: "bookmark",
+                    description: Text("Bookmarked routes will appear here.")
+                )
+            } else {
+                ForEach(viewModel.bookmarkedPlans) { plan in
+                    Button {
+                        viewModel.selectBookmarkedPlan(plan)
+                        close()
+                    } label: {
+                        RouteDrawerRow(
+                            plan: plan,
+                            currentPlanID: viewModel.currentPlanID,
+                            systemImage: "bookmark.fill",
+                            iconColor: Color(.systemBlue)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .navigationTitle("Bookmarked Routes")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct DrawerSectionHeader: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.tertiary)
+            .textCase(nil)
+    }
+}
+
+private struct DrawerRouteGroupLabel: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.top, 4)
+            .padding(.bottom, 1)
+            .listRowSeparator(.hidden)
+    }
+}
+
+private struct DrawerEmptyStateRow: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 26)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+private struct RouteDrawerRow: View {
+    let plan: PlanSnapshot
+    let currentPlanID: UUID?
+    let systemImage: String
+    let iconColor: Color
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundStyle(iconColor)
+                .frame(width: 26)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(plan.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text("\(plan.stops.count) \(plan.stops.count == 1 ? "stop" : "stops")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if plan.id == currentPlanID {
+                Text("Current")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -868,6 +996,7 @@ private struct PlanSheet: View {
 
                     OptimizeRouteButton(
                         isEnabled: viewModel.stops.count >= 2,
+                        isOptimized: viewModel.routePlanningMode != .manual,
                         action: onPlanRoute
                     )
                     .padding(.horizontal, 16)
@@ -1262,11 +1391,12 @@ private struct RoutePlanStatusBadge: View {
 
 private struct OptimizeRouteButton: View {
     let isEnabled: Bool
+    let isOptimized: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Label("Optimize Route", systemImage: "arrow.triangle.branch")
+            Label(isOptimized ? "Optimized" : "Optimize Route", systemImage: isOptimized ? "checkmark.circle.fill" : "arrow.triangle.branch")
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity, minHeight: 40)
         }
@@ -1276,7 +1406,7 @@ private struct OptimizeRouteButton: View {
         .foregroundStyle(isEnabled ? .white : Color(.secondaryLabel))
         .controlSize(.regular)
         .disabled(!isEnabled)
-        .accessibilityLabel("Optimize route")
+        .accessibilityLabel(isOptimized ? "Route optimized. Change optimization" : "Optimize route")
     }
 }
 
@@ -2039,6 +2169,131 @@ private struct CompactStopPreview: View {
     }
 }
 
+private struct AddressImportSheet: View {
+    @ObservedObject var viewModel: HomeMapViewModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var addressesText = ""
+    @State private var resultMessage: String?
+    @State private var importTask: Task<Void, Never>?
+    @FocusState private var isEditorFocused: Bool
+
+    private var hasAddressText: Bool {
+        addressesText
+            .components(separatedBy: .newlines)
+            .contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $addressesText)
+                        .frame(minHeight: 190)
+                        .focused($isEditorFocused)
+                        .textInputAutocapitalization(.words)
+                        .disableAutocorrection(true)
+                        .accessibilityIdentifier("address-import-editor")
+                } footer: {
+                    Text("Paste one address per line. Numbered and bulleted lists are okay.")
+                        .font(.footnote)
+                        .textCase(nil)
+                }
+
+                if let progress = viewModel.addressImportProgress {
+                    Section {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                                .controlSize(.small)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Resolving \(progress.currentIndex) of \(progress.totalCount)")
+                                    .font(.subheadline.weight(.semibold))
+                                Text(progress.currentAddress)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                }
+
+                if let resultMessage {
+                    Section {
+                        Text(resultMessage)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Import Addresses")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .disabled(viewModel.isImportingStops)
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        importAddresses()
+                    } label: {
+                        if viewModel.isImportingStops {
+                            ProgressView()
+                        } else {
+                            Text("Import")
+                        }
+                    }
+                    .disabled(!hasAddressText || viewModel.isImportingStops)
+                }
+            }
+            .interactiveDismissDisabled(viewModel.isImportingStops)
+            .task {
+                isEditorFocused = true
+            }
+            .onChange(of: scenePhase) { _, phase in
+                guard phase != .active else { return }
+                importTask?.cancel()
+                importTask = nil
+            }
+            .onDisappear {
+                importTask?.cancel()
+                importTask = nil
+            }
+        }
+    }
+
+    private func importAddresses() {
+        resultMessage = nil
+        isEditorFocused = false
+        importTask?.cancel()
+
+        importTask = Task {
+            let result = await viewModel.importStops(from: addressesText)
+            guard !Task.isCancelled else { return }
+            if result.failedCount == 0, result.addedCount > 0 {
+                dismiss()
+            } else {
+                resultMessage = message(for: result)
+            }
+            importTask = nil
+        }
+    }
+
+    private func message(for result: AddressImportResult) -> String {
+        if result.totalCount == 0 {
+            return "Paste at least one address to import."
+        }
+
+        if result.addedCount == 0 {
+            return "No stops were added. Check the addresses and try again."
+        }
+
+        return result.summary
+    }
+}
+
 private struct RoutePlannerSheet: View {
     @ObservedObject var viewModel: HomeMapViewModel
     @State private var mode: RoutePlanningMode = .shortest
@@ -2055,10 +2310,11 @@ private struct RoutePlannerSheet: View {
                             Text(mode.title).tag(mode)
                         }
                     }
-
+                } footer: {
                     Text(mode.description)
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .textCase(nil)
                 }
 
                 Section("Start") {

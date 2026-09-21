@@ -7,6 +7,7 @@ enum UserFacingErrorMessage {
     static let placeSearch = "We could not search places. Check your connection and try again."
     static let addStop = "We could not add that place. Please search for it again."
     static let addMapPin = "We could not add that map pin. Please try again."
+    static let importAddresses = "We could not import those addresses. Please check the list and try again."
     static let saveRoute = "We could not save the route details. Please try again."
     static let openRoute = "We could not open that saved route."
     static let createRoute = "We could not create a new route. Please try again."

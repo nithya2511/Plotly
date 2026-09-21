@@ -544,6 +544,238 @@ final class PlotlyTests: XCTestCase {
         XCTAssertEqual(viewModel.mapFocusRequest?.stopID, viewModel.stops.first?.id)
     }
 
+    func testViewModelImportsPastedAddressesInOrder() async throws {
+        let detailsByQuery = [
+            "Museum Island": PlaceDetails(
+                placeID: "museum-island",
+                name: "Museum Island",
+                formattedAddress: "Museum Island, Berlin",
+                latitude: 52.5169,
+                longitude: 13.4010
+            ),
+            "Brandenburg Gate": PlaceDetails(
+                placeID: "brandenburg-gate",
+                name: "Brandenburg Gate",
+                formattedAddress: "Pariser Platz, Berlin",
+                latitude: 52.5163,
+                longitude: 13.3777
+            )
+        ]
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                ),
+                freeformDetailsByQuery: detailsByQuery
+            ),
+            locationService: MockLocationService()
+        )
+
+        viewModel.load()
+        let result = await viewModel.importStops(from: "1. Museum Island\n- Brandenburg Gate")
+
+        XCTAssertEqual(result.addedCount, 2)
+        XCTAssertTrue(result.failedAddresses.isEmpty)
+        XCTAssertEqual(viewModel.stops.map(\.placeID), ["museum-island", "brandenburg-gate"])
+        XCTAssertEqual(viewModel.selectedStopID, viewModel.stops.last?.id)
+        XCTAssertEqual(viewModel.mapFocusRequest?.stopID, viewModel.stops.last?.id)
+    }
+
+    func testViewModelIgnoresWhitespaceOnlyLinesWhenImportingAddresses() async throws {
+        let detailsByQuery = [
+            "Museum Island": PlaceDetails(
+                placeID: "museum-island",
+                name: "Museum Island",
+                formattedAddress: "Museum Island, Berlin",
+                latitude: 52.5169,
+                longitude: 13.4010
+            ),
+            "Brandenburg Gate": PlaceDetails(
+                placeID: "brandenburg-gate",
+                name: "Brandenburg Gate",
+                formattedAddress: "Pariser Platz, Berlin",
+                latitude: 52.5163,
+                longitude: 13.3777
+            )
+        ]
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                ),
+                freeformDetailsByQuery: detailsByQuery
+            ),
+            locationService: MockLocationService()
+        )
+
+        viewModel.load()
+        let result = await viewModel.importStops(
+            from: "\n\t  \n\u{200B}  Museum Island  \u{00A0}\n\n\t-  Brandenburg Gate\t\n   "
+        )
+
+        XCTAssertEqual(result.totalCount, 2)
+        XCTAssertEqual(result.addedCount, 2)
+        XCTAssertTrue(result.failedAddresses.isEmpty)
+        XCTAssertEqual(viewModel.stops.map(\.placeID), ["museum-island", "brandenburg-gate"])
+    }
+
+    func testViewModelImportsAppleMapsLinksWithCoordinates() async throws {
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                )
+            ),
+            locationService: MockLocationService()
+        )
+        let pastedLinks = """
+        https://maps.apple.com/?address=Pariser%20Platz,%20Berlin&q=Brandenburg%20Gate&ll=52.516275,13.377704
+        https://maps.apple.com/?q=Museum%20Island&ll=52.516900,13.401000
+        https://maps.apple.com/?address=Alexanderplatz,%20Berlin&q=Alexanderplatz&ll=52.521918,13.413215
+        """
+
+        viewModel.load()
+        let result = await viewModel.importStops(from: pastedLinks)
+
+        XCTAssertEqual(result.totalCount, 3)
+        XCTAssertEqual(result.addedCount, 3)
+        XCTAssertTrue(result.failedAddresses.isEmpty)
+        XCTAssertEqual(viewModel.stops.map(\.name), ["Brandenburg Gate", "Museum Island", "Alexanderplatz"])
+        XCTAssertEqual(viewModel.stops.map(\.formattedAddress), ["Pariser Platz, Berlin", "Museum Island", "Alexanderplatz, Berlin"])
+    }
+
+    func testViewModelImportsSingleSlashAppleMapsLinks() async throws {
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                )
+            ),
+            locationService: MockLocationService()
+        )
+
+        viewModel.load()
+        let result = await viewModel.importStops(from: "https:/maps.apple.com/?q=Brandenburg%20Gate&ll=52.516275,13.377704")
+
+        XCTAssertEqual(result.addedCount, 1)
+        XCTAssertEqual(viewModel.stops.first?.name, "Brandenburg Gate")
+    }
+
+    func testViewModelImportsAppleMapsShortLinks() async throws {
+        let linkDetails = [
+            "https://maps.apple/p/7j~haQnpuF5_QR": PlaceDetails(
+                placeID: "short-link-one",
+                name: "First Short Link Stop",
+                formattedAddress: "First Short Link Address",
+                latitude: 52.1,
+                longitude: 13.1
+            ),
+            "https://maps.apple/p/PDSruEQtKwKDbS": PlaceDetails(
+                placeID: "short-link-two",
+                name: "Second Short Link Stop",
+                formattedAddress: "Second Short Link Address",
+                latitude: 52.2,
+                longitude: 13.2
+            ),
+            "https://maps.apple/p/0ksMgu.e1vt3Wn": PlaceDetails(
+                placeID: "short-link-three",
+                name: "Third Short Link Stop",
+                formattedAddress: "Third Short Link Address",
+                latitude: 52.3,
+                longitude: 13.3
+            )
+        ]
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                ),
+                mapLinkDetailsByLink: linkDetails
+            ),
+            locationService: MockLocationService()
+        )
+
+        viewModel.load()
+        let result = await viewModel.importStops(
+            from: """
+            https://maps.apple/p/7j~haQnpuF5_QR
+
+            https://maps.apple/p/PDSruEQtKwKDbS
+
+            https://maps.apple/p/0ksMgu.e1vt3Wn
+            """
+        )
+
+        XCTAssertEqual(result.totalCount, 3)
+        XCTAssertEqual(result.addedCount, 3)
+        XCTAssertTrue(result.failedAddresses.isEmpty)
+        XCTAssertEqual(viewModel.stops.map(\.placeID), ["short-link-one", "short-link-two", "short-link-three"])
+    }
+
+    func testViewModelImportsResolvableAddressesAndReportsFailures() async throws {
+        let viewModel = HomeMapViewModel(
+            repository: MockPlanRepository(),
+            searchService: MockPlaceSearchService(
+                suggestions: [],
+                details: PlaceDetails(
+                    placeID: "unused",
+                    name: "Unused",
+                    formattedAddress: "Unused Address",
+                    latitude: 0,
+                    longitude: 0
+                ),
+                freeformDetailsByQuery: [
+                    "Valid Address": PlaceDetails(
+                        placeID: "valid-address",
+                        name: "Valid Address",
+                        formattedAddress: "Valid Address",
+                        latitude: 52.5,
+                        longitude: 13.4
+                    )
+                ]
+            ),
+            locationService: MockLocationService()
+        )
+
+        viewModel.load()
+        let result = await viewModel.importStops(from: "Valid Address\nMissing Address")
+
+        XCTAssertEqual(result.addedCount, 1)
+        XCTAssertEqual(result.failedAddresses, ["Missing Address"])
+        XCTAssertEqual(viewModel.stops.map(\.placeID), ["valid-address"])
+        XCTAssertEqual(viewModel.errorMessage, "Added 1 stop. Could not find: Missing Address.")
+    }
+
     func testViewModelShowsFriendlyMessageWhenPlaceSearchFails() async throws {
         let viewModel = HomeMapViewModel(
             repository: MockPlanRepository(),
@@ -1358,17 +1590,23 @@ private final class MockPlanRepository: PlanRepository {
 private final class MockPlaceSearchService: PlaceSearchService {
     private let stubSuggestions: [PlaceSuggestion]
     private let stubDetails: PlaceDetails
+    private let freeformDetailsByQuery: [String: PlaceDetails]
+    private let mapLinkDetailsByLink: [String: PlaceDetails]
     private let suggestionsError: Error?
     private let detailsError: Error?
 
     init(
         suggestions: [PlaceSuggestion],
         details: PlaceDetails,
+        freeformDetailsByQuery: [String: PlaceDetails] = [:],
+        mapLinkDetailsByLink: [String: PlaceDetails] = [:],
         suggestionsError: Error? = nil,
         detailsError: Error? = nil
     ) {
         self.stubSuggestions = suggestions
         self.stubDetails = details
+        self.freeformDetailsByQuery = freeformDetailsByQuery
+        self.mapLinkDetailsByLink = mapLinkDetailsByLink
         self.suggestionsError = suggestionsError
         self.detailsError = detailsError
     }
@@ -1387,6 +1625,26 @@ private final class MockPlaceSearchService: PlaceSearchService {
         return stubDetails
     }
 
+    func details(forFreeformQuery query: String, near coordinate: CLLocationCoordinate2D?) async throws -> PlaceDetails {
+        if let detailsError {
+            throw detailsError
+        }
+        guard let details = freeformDetailsByQuery[query] else {
+            throw TestError()
+        }
+        return details
+    }
+
+    func details(forMapLink link: String, near coordinate: CLLocationCoordinate2D?) async throws -> PlaceDetails {
+        if let detailsError {
+            throw detailsError
+        }
+        guard let details = mapLinkDetailsByLink[link] else {
+            throw TestError()
+        }
+        return details
+    }
+
     func details(for mapFeature: MapFeature) async throws -> PlaceDetails {
         if let detailsError {
             throw detailsError
@@ -1400,6 +1658,8 @@ private final class MockLocationService: LocationService {
     func requestCurrentLocation() async -> CLLocationCoordinate2D? {
         nil
     }
+
+    func cancelCurrentRequest() {}
 }
 
 @MainActor
